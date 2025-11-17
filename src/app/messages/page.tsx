@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useState, Suspense } from "react";
 import {
   collection,
   addDoc,
@@ -32,7 +32,7 @@ type ChatMessage = {
   mine: boolean;
 };
 
-export default function MessagesPage() {
+function MessagesPageInner() {
   const { user, activeProfile } = useAuthContext();
   const searchParams = useSearchParams();
 
@@ -430,6 +430,16 @@ export default function MessagesPage() {
     </div>
   );
 }
+
+// This is the part that satisfies Next.js: wrap the searchParams user in Suspense
+export default function MessagesPage() {
+  return (
+    <Suspense fallback={<div className="messages-empty">Loading messages…</div>}>
+      <MessagesPageInner />
+    </Suspense>
+  );
+}
+
 
 
 
