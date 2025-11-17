@@ -1,34 +1,42 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
+import {
+  addDoc,
+  collection,
+  onSnapshot,
+  orderBy,
+  query,
+  serverTimestamp,
+  Timestamp,
+} from "firebase/firestore";
+import { db, auth } from "@/lib/firebase";
 
 type Platform = "youtube" | "soundcloud" | "mixcloud" | "other";
 
-type Clip = {
-  id: number;
-  handle: string;
-  title: string;
+type ClipFromDb = {
+  title?: string;
+  url?: string;
   description?: string;
-  createdAt: Date;
-  platform: Platform;
-  mediaUrl?: string;
-  embedUrl?: string;
+  platform?: Platform;
+  handle?: string;
+  uid?: string;
+  createdAt?: Timestamp;
 };
 
-const initialClips: Clip[] = [
-  {
-    id: 1,
-    handle: "@djexample",
-    title: "Crab scratch combo",
-    description: "Quick combo on the 1200s.",
-    createdAt: new Date(Date.now() - 1000 * 60 * 60),
-    platform: "youtube",
-    mediaUrl: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-    embedUrl: "https://www.youtube.com/embed/dQw4w9WgXcQ",
-  },
-];
+type Clip = {
+  id: string;
+  title: string;
+  url: string;
+  description: string;
+  platform: Platform;
+  handle: string;
+  uid: string;
+  createdAt: Date | null;
+};
 
-function timeSince(date: Date): string {
+function timeSince(date: Date | null): string {
+  if (!date) return "";
   const diffMs = Date.now() - date.getTime();
   const sec = Math.floor(diffMs / 1000);
   if (sec < 60) return "just now";
@@ -40,112 +48,146 @@ function timeSince(date: Date): string {
   return `${days} day${days === 1 ? "" : "s"} ago`;
 }
 
-// Same helper as feed
-function getEmbedInfo(
-  rawUrl: string | null
-): { platform: Platform; embedUrl?: string; mediaUrl?: string } {
-  if (!rawUrl) return { platform: "other" };
-  const urlStr = rawUrl.trim();
-  if (!urlStr) return { platform: "other" };
+function detectPlatform(url: string): Platform {
+  const u = url.toLowerCase();
+  if (u.includes("youtube.com") || u.includes("youtu.be")) return "youtube";
+  if (u.includes("soundcloud.com")) return "soundcloud";
+  if (u.includes("mixcloud.com")) return "mixcloud";
+  return "other";
+}
 
-  let url: URL;
-  try {
-    url = new URL(urlStr);
-  } catch {
-    return { platform: "other", mediaUrl: urlStr };
-  }
-
-  const host = url.hostname.toLowerCase();
-
-  // YouTube
-  if (host.includes("youtube.com") || host.includes("youtu.be")) {
-    let videoId: string | null = null;
-    if (host.includes("youtu.be")) {
-      videoId = url.pathname.replace("/", "");
-    } else {
-      videoId = url.searchParams.get("v");
+function buildEmbedSrc(url: string, platform: Platform): string | null {
+  if (platform === "youtube") {
+    // crude but works for normal YouTube / youtu.be URLs
+    let videoId = "";
+    try {
+      const parsed = new URL(url);
+      if (parsed.hostname.includes("youtu.be")) {
+        videoId = parsed.pathname.replace("/", "");
+      } else {
+        videoId = parsed.searchParams.get("v") ?? "";
+      }
+    } catch {
+      // ignore parse errors
     }
+    if (!videoId) return null;
+    return `https://www.youtube.com/embed/${videoId}`;
+  }
 
-    if (videoId) {
-      return {
-        platform: "youtube",
-        embedUrl: `https://www.youtube.com/embed/${videoId}`,
-        mediaUrl: url.toString(),
-      };
+  if (platform === "soundcloud") {
+    const encoded = encodeURIComponent(url);
+    return `https://w.soundcloud.com/player/?url=${encoded}`;
+  }
+
+  if (platform === "mixcloud") {
+    // Mixcloud expects a "feed" path without https://www.mixcloud.com
+    try {
+      const parsed = new URL(url);
+      const feed = encodeURIComponent(
+        `${parsed.origin}${parsed.pathname}`
+      );
+      return `https://www.mixcloud.com/widget/iframe/?hide_cover=1&light=1&feed=${feed}`;
+    } catch {
+      return null;
     }
-    return { platform: "youtube", mediaUrl: url.toString() };
   }
 
-  // SoundCloud
-  if (host.includes("soundcloud.com")) {
-    const embed = `https://w.soundcloud.com/player/?url=${encodeURIComponent(
-      url.toString()
-    )}&color=%23ff5500&auto_play=false&hide_related=false&show_comments=true&show_user=true&show_reposts=false&show_teaser=true`;
-    return {
-      platform: "soundcloud",
-      embedUrl: embed,
-      mediaUrl: url.toString(),
-    };
-  }
-
-  // Mixcloud
-  if (host.includes("mixcloud.com")) {
-    const embed = `https://www.mixcloud.com/widget/iframe/?hide_cover=1&mini=1&light=1&feed=${encodeURIComponent(
-      url.toString()
-    )}`;
-    return {
-      platform: "mixcloud",
-      embedUrl: embed,
-      mediaUrl: url.toString(),
-    };
-  }
-
-  return { platform: "other", mediaUrl: url.toString() };
+  return null;
 }
 
 export default function ClipsPage() {
-  const [clips, setClips] = useState<Clip[]>(initialClips);
+  const [clips, setClips] = useState<Clip[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  function handleAddClip(e: FormEvent<HTMLFormElement>) {
+  // Live subscription to clips
+  useEffect(() => {
+    const clipsRef = collection(db, "clips");
+    const q = query(clipsRef, orderBy("createdAt", "desc"));
+
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const next: Clip[] = snapshot.docs.map((doc) => {
+          const data = doc.data() as ClipFromDb;
+          return {
+            id: doc.id,
+            title: data.title ?? "",
+            url: data.url ?? "",
+            description: data.description ?? "",
+            platform: data.platform ?? "other",
+            handle: data.handle ?? "@unknown",
+            uid: data.uid ?? "",
+            createdAt: data.createdAt ? data.createdAt.toDate() : null,
+          };
+        });
+        setClips(next);
+        setLoading(false);
+      },
+      (err) => {
+        console.error("Error loading clips", err);
+        setErrorMsg("Could not load clips.");
+        setLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
+
+  async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    setErrorMsg(null);
+
+    const user = auth.currentUser;
+    if (!user) {
+      setErrorMsg("You need to be signed in to post a clip.");
+      return;
+    }
+
     const form = e.currentTarget;
     const formData = new FormData(form);
 
     const handle = (formData.get("handle") as string)?.trim();
     const title = (formData.get("title") as string)?.trim();
+    const url = (formData.get("url") as string)?.trim();
     const description = (formData.get("description") as string)?.trim();
-    const mediaRaw = formData.get("mediaUrl") as string | null;
 
-    if (!handle || !title || !mediaRaw) return;
+    if (!handle || !title || !url) {
+      setErrorMsg("Handle, title and URL are required.");
+      return;
+    }
 
-    const { platform, embedUrl, mediaUrl } = getEmbedInfo(mediaRaw);
+    const platform = detectPlatform(url);
 
-    const newClip: Clip = {
-      id: Date.now(),
-      handle: handle.startsWith("@") ? handle : `@${handle}`,
-      title,
-      description,
-      createdAt: new Date(),
-      platform,
-      mediaUrl,
-      embedUrl,
-    };
+    try {
+      await addDoc(collection(db, "clips"), {
+        handle: handle.startsWith("@") ? handle : `@${handle}`,
+        title,
+        url,
+        description: description ?? "",
+        platform,
+        uid: user.uid,
+        createdAt: serverTimestamp(),
+      });
 
-    setClips((prev) => [newClip, ...prev]);
-    form.reset();
+      form.reset();
+    } catch (err) {
+      console.error("Error creating clip", err);
+      setErrorMsg("Could not save clip. Please try again.");
+    }
   }
 
   return (
-    <div className="clips-page">
+    <div className="main-shell">
       {/* Header */}
-      <div className="clips-header">
+      <header className="clips-header">
         <h1>Clips</h1>
-        <p>Drop scratch sessions, routines, battle clips and mixes.</p>
-      </div>
+        <p>Drop scratch sessions, beat juggles and battle routines.</p>
+      </header>
 
-      {/* Add new clip */}
+      {/* Composer */}
       <section className="clips-form">
-        <form onSubmit={handleAddClip}>
+        <form onSubmit={handleSubmit} className="clips-form-inner">
           <div className="clips-form-row">
             <div className="clips-field">
               <label className="clips-label" htmlFor="handle">
@@ -154,13 +196,12 @@ export default function ClipsPage() {
               <input
                 id="handle"
                 name="handle"
-                type="text"
                 className="clips-input"
                 placeholder="@yourdjname"
+                type="text"
                 required
               />
             </div>
-
             <div className="clips-field">
               <label className="clips-label" htmlFor="title">
                 Title
@@ -168,81 +209,110 @@ export default function ClipsPage() {
               <input
                 id="title"
                 name="title"
-                type="text"
                 className="clips-input"
-                placeholder="Name this clip"
+                placeholder="Crab scratch combo"
+                type="text"
                 required
               />
             </div>
           </div>
 
-          <div className="clips-field" style={{ marginBottom: "0.75rem" }}>
+          <div className="clips-form-row">
+            <div className="clips-field">
+              <label className="clips-label" htmlFor="url">
+                Clip URL (YouTube, SoundCloud, Mixcloud)
+              </label>
+              <input
+                id="url"
+                name="url"
+                className="clips-input"
+                placeholder="https://youtube.com/..."
+                type="url"
+                required
+              />
+            </div>
+          </div>
+
+          <div className="clips-field">
             <label className="clips-label" htmlFor="description">
-              Description (optional)
+              Description
             </label>
             <textarea
               id="description"
               name="description"
               className="clips-textarea"
-              placeholder="Scratch pattern, BPM, gear, battle context..."
-            />
-          </div>
-
-          <div className="clips-field" style={{ marginBottom: "0.75rem" }}>
-            <label className="clips-label" htmlFor="mediaUrl">
-              Clip link (YouTube, SoundCloud, Mixcloud)
-            </label>
-            <input
-              id="mediaUrl"
-              name="mediaUrl"
-              type="url"
-              className="clips-input"
-              placeholder="https://youtube.com/... or https://soundcloud.com/... or https://mixcloud.com/..."
-              required
+              placeholder="Tempo, routine notes, gear, etc."
             />
           </div>
 
           <div className="clips-submit-row">
             <button type="submit" className="clips-submit">
-              Add clip
+              Add new clip
             </button>
           </div>
+
+          {errorMsg && (
+            <p className="auth-error" style={{ marginTop: "0.5rem" }}>
+              {errorMsg}
+            </p>
+          )}
         </form>
       </section>
 
-      {/* Latest clips */}
-      <section className="clips-list">
-        {clips.map((clip) => (
-          <article key={clip.id} className="clip-card">
-            <div className="clip-card-header">
-              <div>
-                <div className="clip-title">{clip.title}</div>
-                <div className="clip-meta">
-                  {clip.handle} · {timeSince(clip.createdAt)}
+      {/* List */}
+      <section>
+        <h2 className="clips-header" style={{ marginBottom: "0.5rem" }}>
+          Latest clips
+        </h2>
+
+        {loading && <p>Loading clips…</p>}
+
+        {!loading && clips.length === 0 && (
+          <p>No clips yet – be the first to post something.</p>
+        )}
+
+        <div className="clips-list">
+          {clips.map((clip) => {
+            const embedSrc = buildEmbedSrc(clip.url, clip.platform);
+            const when = timeSince(clip.createdAt);
+
+            return (
+              <article key={clip.id} className="clip-card">
+                <div className="clip-card-header">
+                  <div>
+                    <div className="clip-title">{clip.title}</div>
+                    <div className="clip-meta">
+                      {clip.handle}
+                      {when ? ` · ${when}` : ""}
+                    </div>
+                  </div>
+                  <div className="clip-meta" style={{ textTransform: "uppercase" }}>
+                    {clip.platform === "other" ? "LINK" : clip.platform}
+                  </div>
                 </div>
-              </div>
-            </div>
 
-            {clip.description && (
-              <div className="clip-description">{clip.description}</div>
-            )}
+                {clip.description && (
+                  <p className="clip-description">{clip.description}</p>
+                )}
 
-            {clip.embedUrl && clip.platform !== "other" && (
-              <div className="clips-embed">
-                <iframe
-                  className={`embed-frame ${clip.platform}`}
-                  src={clip.embedUrl}
-                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                  allowFullScreen={clip.platform === "youtube"}
-                  loading="lazy"
-                  title={`clip-${clip.id}`}
-                />
-              </div>
-            )}
-          </article>
-        ))}
+                {embedSrc && (
+                  <div className="clips-embed">
+                    <iframe
+                      src={embedSrc}
+                      className={`embed-frame ${clip.platform}`}
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                      allowFullScreen
+                      title={clip.title}
+                    />
+                  </div>
+                )}
+              </article>
+            );
+          })}
+        </div>
       </section>
     </div>
   );
 }
+
 

@@ -1,224 +1,243 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState, ChangeEvent } from "react";
+import {
+  addDoc,
+  collection,
+  doc,
+  increment,
+  onSnapshot,
+  orderBy,
+  query,
+  serverTimestamp,
+  Timestamp,
+  updateDoc,
+} from "firebase/firestore";
+import { db } from "../../lib/firebase";
+import { useAuthContext } from "../../context/AuthContext";
 
-type Platform = "youtube" | "soundcloud" | "mixcloud" | "other";
-
-type Battle = {
-  id: number;
+type BattleDoc = {
   title: string;
-  challenger: string;
-  opponent: string;
-  conditions?: string;
-  createdAt: Date;
-  // Challenger media
-  challengerPlatform?: Platform;
-  challengerMediaUrl?: string;
-  challengerEmbedUrl?: string;
-  // Opponent media
-  opponentPlatform?: Platform;
-  opponentMediaUrl?: string;
-  opponentEmbedUrl?: string;
-  // Votes
-  challengerVotes: number;
-  opponentVotes: number;
+  conditions: string;
+  createdAt?: Timestamp;
+  creatorUid: string;
+  creatorHandle: string;
+  opponentHandle: string;
+  clipAUrl: string; // creator
+  clipBUrl: string; // opponent
+  votesA?: number;
+  votesB?: number;
 };
 
-const initialBattles: Battle[] = [
-  {
-    id: 1,
-    title: "90s Boom Bap Scratch-Off",
-    challenger: "@scratchmonk",
-    opponent: "@beatjugglekid",
-    conditions: "2 x 45-second rounds. 95–100 BPM, 90s hip-hop only.",
-    createdAt: new Date(Date.now() - 1000 * 60 * 60 * 4),
-    challengerPlatform: "youtube",
-    challengerMediaUrl: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-    challengerEmbedUrl: "https://www.youtube.com/embed/dQw4w9WgXcQ",
-    opponentPlatform: "youtube",
-    opponentMediaUrl: "https://www.youtube.com/watch?v=oHg5SJYRHA0",
-    opponentEmbedUrl: "https://www.youtube.com/embed/oHg5SJYRHA0",
-    challengerVotes: 5,
-    opponentVotes: 3,
-  },
-];
+type Battle = {
+  id: string;
+  title: string;
+  conditions: string;
+  createdAt: Timestamp | null;
+  creatorUid: string;
+  creatorHandle: string;
+  opponentHandle: string;
+  clipAUrl: string;
+  clipBUrl: string;
+  votesA: number;
+  votesB: number;
+};
 
-function timeSince(date: Date): string {
-  const diffMs = Date.now() - date.getTime();
-  const sec = Math.floor(diffMs / 1000);
-  if (sec < 60) return "just now";
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `${min} min${min === 1 ? "" : "s"} ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr} hour${hr === 1 ? "" : "s"} ago`;
-  const days = Math.floor(hr / 24);
-  return `${days} day${days === 1 ? "" : "s"} ago`;
-}
+type BattleFormState = {
+  title: string;
+  conditions: string;
+  opponentHandle: string;
+  clipAUrl: string;
+  clipBUrl: string;
+};
 
-// Helper: detect platform and build embed URL from a pasted link
-function getEmbedInfo(
-  rawUrl: string | null
-): { platform: Platform; embedUrl?: string; mediaUrl?: string } {
-  if (!rawUrl) return { platform: "other" };
-  const urlStr = rawUrl.trim();
-  if (!urlStr) return { platform: "other" };
+const initialForm: BattleFormState = {
+  title: "",
+  conditions: "",
+  opponentHandle: "",
+  clipAUrl: "",
+  clipBUrl: "",
+};
 
-  let url: URL;
+type VoteState = {
+  [battleId: string]: {
+    a: boolean;
+    b: boolean;
+  };
+};
+
+// Simple YouTube embed helper
+function getYouTubeEmbedId(url: string): string | null {
   try {
-    url = new URL(urlStr);
+    const u = new URL(url);
+    if (u.hostname === "youtu.be") {
+      return u.pathname.slice(1);
+    }
+    if (
+      u.hostname === "www.youtube.com" ||
+      u.hostname === "youtube.com" ||
+      u.hostname === "m.youtube.com"
+    ) {
+      const v = u.searchParams.get("v");
+      if (v) return v;
+      if (u.pathname.startsWith("/embed/")) {
+        return u.pathname.split("/embed/")[1] ?? null;
+      }
+    }
   } catch {
-    return { platform: "other", mediaUrl: urlStr };
+    return null;
   }
-
-  const host = url.hostname.toLowerCase();
-
-  // YouTube
-  if (host.includes("youtube.com") || host.includes("youtu.be")) {
-    let videoId: string | null = null;
-
-    if (host.includes("youtu.be")) {
-      videoId = url.pathname.replace("/", "");
-    } else {
-      videoId = url.searchParams.get("v");
-    }
-
-    if (videoId) {
-      return {
-        platform: "youtube",
-        embedUrl: `https://www.youtube.com/embed/${videoId}`,
-        mediaUrl: url.toString(),
-      };
-    }
-
-    return { platform: "youtube", mediaUrl: url.toString() };
-  }
-
-  // SoundCloud
-  if (host.includes("soundcloud.com")) {
-    const embed = `https://w.soundcloud.com/player/?url=${encodeURIComponent(
-      url.toString()
-    )}&color=%23ff5500&auto_play=false&hide_related=false&show_comments=true&show_user=true&show_reposts=false&show_teaser=true`;
-    return {
-      platform: "soundcloud",
-      embedUrl: embed,
-      mediaUrl: url.toString(),
-    };
-  }
-
-  // Mixcloud
-  if (host.includes("mixcloud.com")) {
-    const embed = `https://www.mixcloud.com/widget/iframe/?hide_cover=1&mini=1&light=1&feed=${encodeURIComponent(
-      url.toString()
-    )}`;
-    return {
-      platform: "mixcloud",
-      embedUrl: embed,
-      mediaUrl: url.toString(),
-    };
-  }
-
-  return { platform: "other", mediaUrl: url.toString() };
+  return null;
 }
 
 export default function BattlesPage() {
-  const [battles, setBattles] = useState<Battle[]>(initialBattles);
+  const { user, activeProfile } = useAuthContext();
 
-  function handleCreateBattle(e: FormEvent<HTMLFormElement>) {
+  const [form, setForm] = useState<BattleFormState>(initialForm);
+  const [creating, setCreating] = useState(false);
+  const [battles, setBattles] = useState<Battle[]>([]);
+
+  // Track which sides this browser has voted for in each battle
+  const [voteState, setVoteState] = useState<VoteState>(() => {
+    if (typeof window === "undefined") return {};
+    try {
+      const raw = window.localStorage.getItem("battleVotes");
+      return raw ? (JSON.parse(raw) as VoteState) : {};
+    } catch {
+      return {};
+    }
+  });
+
+  // Persist voteState to localStorage so it survives refresh
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem("battleVotes", JSON.stringify(voteState));
+    } catch {
+      // ignore storage errors
+    }
+  }, [voteState]);
+
+  // Load battles (newest first)
+  useEffect(() => {
+    const q = query(collection(db, "battles"), orderBy("createdAt", "desc"));
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const items: Battle[] = snapshot.docs.map((docSnap) => {
+        const data = docSnap.data() as BattleDoc;
+        return {
+          id: docSnap.id,
+          title: data.title,
+          conditions: data.conditions,
+          createdAt: data.createdAt ?? null,
+          creatorUid: data.creatorUid,
+          creatorHandle: data.creatorHandle,
+          opponentHandle: data.opponentHandle,
+          clipAUrl: data.clipAUrl,
+          clipBUrl: data.clipBUrl,
+          votesA: data.votesA ?? 0,
+          votesB: data.votesB ?? 0,
+        };
+      });
+      setBattles(items);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // ----- form handlers -----
+  function handleChange(
+    e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
+  ) {
+    const { name, value } = e.target;
+    setForm((prev) => ({ ...prev, [name]: value }));
+  }
+
+  async function handleCreateBattle(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    const form = e.currentTarget;
-    const formData = new FormData(form);
+    if (!user || !activeProfile) return;
 
-    const challenger = (formData.get("challenger") as string)?.trim();
-    const opponent = (formData.get("opponent") as string)?.trim();
-    const title = (formData.get("title") as string)?.trim();
-    const conditions = (formData.get("conditions") as string)?.trim();
-    const challengerMediaRaw = formData.get("challengerMedia") as string | null;
-    const opponentMediaRaw = formData.get("opponentMedia") as string | null;
+    const trimmedTitle = form.title.trim();
+    const trimmedConditions = form.conditions.trim();
+    const trimmedOpponent = form.opponentHandle.trim();
+    const trimmedClipA = form.clipAUrl.trim();
+    const trimmedClipB = form.clipBUrl.trim();
 
-    if (!challenger || !opponent || !title) return;
+    if (!trimmedTitle || !trimmedClipA || !trimmedClipB) {
+      return;
+    }
 
-    const challengerInfo = getEmbedInfo(challengerMediaRaw);
-    const opponentInfo = getEmbedInfo(opponentMediaRaw);
+    setCreating(true);
+    try {
+      await addDoc(collection(db, "battles"), {
+        title: trimmedTitle,
+        conditions: trimmedConditions,
+        creatorUid: user.uid,
+        creatorHandle: activeProfile.handle,
+        opponentHandle: trimmedOpponent || "Opponent",
+        clipAUrl: trimmedClipA,
+        clipBUrl: trimmedClipB,
+        votesA: 0,
+        votesB: 0,
+        createdAt: serverTimestamp(),
+      });
 
-    const newBattle: Battle = {
-      id: Date.now(),
-      title,
-      challenger: challenger.startsWith("@") ? challenger : `@${challenger}`,
-      opponent: opponent.startsWith("@") ? opponent : `@${opponent}`,
-      conditions,
-      createdAt: new Date(),
-      challengerPlatform: challengerInfo.platform,
-      challengerMediaUrl: challengerInfo.mediaUrl,
-      challengerEmbedUrl: challengerInfo.embedUrl,
-      opponentPlatform: opponentInfo.platform,
-      opponentMediaUrl: opponentInfo.mediaUrl,
-      opponentEmbedUrl: opponentInfo.embedUrl,
-      challengerVotes: 0,
-      opponentVotes: 0,
-    };
-
-    setBattles((prev) => [newBattle, ...prev]);
-    form.reset();
+      setForm(initialForm);
+    } finally {
+      setCreating(false);
+    }
   }
 
-  function handleVote(id: number, side: "challenger" | "opponent") {
-    setBattles((prev) =>
-      prev.map((battle) => {
-        if (battle.id !== id) return battle;
-        if (side === "challenger") {
-          return { ...battle, challengerVotes: battle.challengerVotes + 1 };
-        }
-        return { ...battle, opponentVotes: battle.opponentVotes + 1 };
-      })
-    );
+  async function handleVote(battleId: string, side: "A" | "B") {
+    if (!user) return; // require login to vote (optional)
+
+    const alreadyForBattle = voteState[battleId] ?? { a: false, b: false };
+
+    // stop multiple votes for the same side in this battle
+    if (side === "A" && alreadyForBattle.a) return;
+    if (side === "B" && alreadyForBattle.b) return;
+
+    const battleRef = doc(db, "battles", battleId);
+
+    if (side === "A") {
+      await updateDoc(battleRef, { votesA: increment(1) });
+      setVoteState((prev) => ({
+        ...prev,
+        [battleId]: { ...alreadyForBattle, a: true },
+      }));
+    } else {
+      await updateDoc(battleRef, { votesB: increment(1) });
+      setVoteState((prev) => ({
+        ...prev,
+        [battleId]: { ...alreadyForBattle, b: true },
+      }));
+    }
   }
+
+  const canCreate = Boolean(user && activeProfile);
 
   return (
-    // Re-use the same container + styles as Feed
     <div className="feed">
-      {/* Header */}
       <div className="feed-header">
         <h1>Battles</h1>
         <p>
-          Spin up head-to-head scratch or beat-juggle battles, drop clips, and
-          let the community vote.
+          Set up scratch showdowns, share clips, and let the community vote on
+          the winner.
         </p>
       </div>
 
-      {/* Create battle form */}
+      {/* CREATE BATTLE */}
       <section className="feed-form">
-        <form onSubmit={handleCreateBattle}>
-          <div className="feed-form-row">
-            <div className="feed-field">
-              <label className="feed-label" htmlFor="challenger">
-                Your handle
-              </label>
-              <input
-                id="challenger"
-                name="challenger"
-                type="text"
-                className="feed-input"
-                placeholder="@yourdjname"
-                required
-              />
-            </div>
+        <h2 className="profile-section-title">Create a battle</h2>
+        {!canCreate && (
+          <p className="auth-subnote">
+            You need to be signed in and have a profile selected to create a
+            battle.
+          </p>
+        )}
 
-            <div className="feed-field">
-              <label className="feed-label" htmlFor="opponent">
-                Opponent handle
-              </label>
-              <input
-                id="opponent"
-                name="opponent"
-                type="text"
-                className="feed-input"
-                placeholder="@otherdj"
-                required
-              />
-            </div>
-          </div>
-
-          <div className="feed-field" style={{ marginBottom: "0.75rem" }}>
+        <form onSubmit={handleCreateBattle} className="space-y-3">
+          <div className="feed-field">
             <label className="feed-label" htmlFor="title">
               Battle title
             </label>
@@ -227,156 +246,185 @@ export default function BattlesPage() {
               name="title"
               type="text"
               className="feed-input"
-              placeholder="e.g. 2-minute juggle battle, 90–100 BPM"
-              required
+              placeholder="Crab scratch showdown, 140bpm juggle, etc."
+              value={form.title}
+              onChange={handleChange}
+              disabled={!canCreate}
             />
           </div>
 
-          <div className="feed-field" style={{ marginBottom: "0.75rem" }}>
+          <div className="feed-field">
             <label className="feed-label" htmlFor="conditions">
-              Conditions / rules
+              Rules / conditions
             </label>
             <textarea
               id="conditions"
               name="conditions"
               className="feed-textarea"
-              placeholder="Time limit, BPM, genre, gear, judging rules..."
+              rows={2}
+              placeholder="e.g. 16 bars, no FX, DVS allowed, etc."
+              value={form.conditions}
+              onChange={handleChange}
+              disabled={!canCreate}
             />
           </div>
 
           <div className="feed-form-row">
             <div className="feed-field">
-              <label className="feed-label" htmlFor="challengerMedia">
-                Your clip (YouTube / SoundCloud / Mixcloud)
+              <label className="feed-label" htmlFor="opponentHandle">
+                Opponent handle (optional)
               </label>
               <input
-                id="challengerMedia"
-                name="challengerMedia"
+                id="opponentHandle"
+                name="opponentHandle"
+                type="text"
+                className="feed-input"
+                placeholder="@otherdj"
+                value={form.opponentHandle}
+                onChange={handleChange}
+                disabled={!canCreate}
+              />
+            </div>
+          </div>
+
+          <div className="feed-form-row">
+            <div className="feed-field">
+              <label className="feed-label" htmlFor="clipAUrl">
+                Your clip (YouTube URL)
+              </label>
+              <input
+                id="clipAUrl"
+                name="clipAUrl"
                 type="url"
                 className="feed-input"
-                placeholder="https://youtube.com/... or soundcloud/mixcloud..."
+                placeholder="https://youtube.com/watch?v=..."
+                value={form.clipAUrl}
+                onChange={handleChange}
+                disabled={!canCreate}
               />
             </div>
 
             <div className="feed-field">
-              <label className="feed-label" htmlFor="opponentMedia">
-                Opponent clip (YouTube / SoundCloud / Mixcloud)
+              <label className="feed-label" htmlFor="clipBUrl">
+                Opponent clip (YouTube URL)
               </label>
               <input
-                id="opponentMedia"
-                name="opponentMedia"
+                id="clipBUrl"
+                name="clipBUrl"
                 type="url"
                 className="feed-input"
-                placeholder="https://youtube.com/... or soundcloud/mixcloud..."
+                placeholder="https://youtube.com/watch?v=..."
+                value={form.clipBUrl}
+                onChange={handleChange}
+                disabled={!canCreate}
               />
             </div>
           </div>
 
           <div className="feed-submit-row">
-            <button type="submit" className="feed-submit">
-              Create battle
+            <button
+              type="submit"
+              className="feed-submit"
+              disabled={!canCreate || creating}
+            >
+              {creating ? "Creating…" : "Create battle"}
             </button>
           </div>
         </form>
       </section>
 
-      {/* Battle list */}
-      <section>
-        {battles.map((battle) => (
-          <article key={battle.id} className="feed-post">
-            <div className="feed-avatar">VS</div>
+      {/* LIST OF BATTLES */}
+      <section className="clips-list">
+        {battles.map((battle) => {
+          const embedAId = getYouTubeEmbedId(battle.clipAUrl);
+          const embedBId = getYouTubeEmbedId(battle.clipBUrl);
+          const voted = voteState[battle.id] ?? { a: false, b: false };
 
-            <div className="feed-post-body">
-              <div className="feed-post-header">
-                <span className="feed-handle">{battle.title}</span>
-                <span className="feed-time">
-                  {timeSince(battle.createdAt)}
-                </span>
-                <span className="feed-mood battle">Battle</span>
+          return (
+            <article key={battle.id} className="clip-card">
+              <div className="clip-card-header">
+                <div className="clip-title">{battle.title}</div>
+                <div className="clip-meta">
+                  Hosted by {battle.creatorHandle}
+                  {battle.createdAt && (
+                    <> · {battle.createdAt.toDate().toLocaleDateString()}</>
+                  )}
+                </div>
               </div>
 
-              <p style={{ marginBottom: "0.25rem" }}>
-                <strong>{battle.challenger}</strong> vs{" "}
-                <strong>{battle.opponent}</strong>
-              </p>
-
-              {battle.conditions && <p>{battle.conditions}</p>}
+              {battle.conditions && (
+                <p className="clip-description">{battle.conditions}</p>
+              )}
 
               <div className="battle-videos">
-                {/* Challenger side */}
+                {/* SIDE A */}
                 <div className="battle-side">
                   <div className="battle-side-header">
-                    <span>{battle.challenger}</span>
-                    <span className="clip-meta">
-                      {battle.challengerVotes} vote
-                      {battle.challengerVotes === 1 ? "" : "s"}
+                    <span>{battle.creatorHandle}</span>
+                    <span>
+                      {battle.votesA} vote{battle.votesA === 1 ? "" : "s"}
                     </span>
                   </div>
-
-                  {battle.challengerEmbedUrl &&
-                    battle.challengerPlatform !== "other" && (
-                      <div className="clips-embed">
-                        <iframe
-                          className={`embed-frame ${battle.challengerPlatform}`}
-                          src={battle.challengerEmbedUrl}
-                          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                          allowFullScreen={
-                            battle.challengerPlatform === "youtube"
-                          }
-                          loading="lazy"
-                          title={`battle-${battle.id}-challenger`}
-                        />
-                      </div>
-                    )}
-
+                  {embedAId && (
+                    <iframe
+                      className="embed-frame youtube"
+                      src={`https://www.youtube.com/embed/${embedAId}`}
+                      title="Battle clip A"
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                      allowFullScreen
+                    />
+                  )}
                   <button
                     type="button"
                     className="battle-vote-btn"
-                    onClick={() => handleVote(battle.id, "challenger")}
+                    onClick={() => handleVote(battle.id, "A")}
+                    disabled={!user || voted.a}
                   >
-                    Vote {battle.challenger}
+                    {voted.a ? "Voted" : `Vote for ${battle.creatorHandle}`}
                   </button>
                 </div>
 
-                {/* Opponent side */}
+                {/* SIDE B */}
                 <div className="battle-side">
                   <div className="battle-side-header">
-                    <span>{battle.opponent}</span>
-                    <span className="clip-meta">
-                      {battle.opponentVotes} vote
-                      {battle.opponentVotes === 1 ? "" : "s"}
+                    <span>{battle.opponentHandle || "Opponent"}</span>
+                    <span>
+                      {battle.votesB} vote{battle.votesB === 1 ? "" : "s"}
                     </span>
                   </div>
-
-                  {battle.opponentEmbedUrl &&
-                    battle.opponentPlatform !== "other" && (
-                      <div className="clips-embed">
-                        <iframe
-                          className={`embed-frame ${battle.opponentPlatform}`}
-                          src={battle.opponentEmbedUrl}
-                          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                          allowFullScreen={
-                            battle.opponentPlatform === "youtube"
-                          }
-                          loading="lazy"
-                          title={`battle-${battle.id}-opponent`}
-                        />
-                      </div>
-                    )}
-
+                  {embedBId && (
+                    <iframe
+                      className="embed-frame youtube"
+                      src={`https://www.youtube.com/embed/${embedBId}`}
+                      title="Battle clip B"
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                      allowFullScreen
+                    />
+                  )}
                   <button
                     type="button"
                     className="battle-vote-btn"
-                    onClick={() => handleVote(battle.id, "opponent")}
+                    onClick={() => handleVote(battle.id, "B")}
+                    disabled={!user || voted.b}
                   >
-                    Vote {battle.opponent}
+                    {voted.b
+                      ? "Voted"
+                      : `Vote for ${battle.opponentHandle || "Opponent"}`}
                   </button>
                 </div>
               </div>
-            </div>
-          </article>
-        ))}
+            </article>
+          );
+        })}
+
+        {battles.length === 0 && (
+          <p className="messages-empty" style={{ marginTop: "0.75rem" }}>
+            No battles yet. Be the first to throw down a challenge.
+          </p>
+        )}
       </section>
     </div>
   );
 }
+
+

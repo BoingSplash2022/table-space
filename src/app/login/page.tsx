@@ -7,9 +7,9 @@ import {
   GoogleAuthProvider,
   signInWithPopup,
 } from "firebase/auth";
-import { auth } from "@/lib/firebase";
+import { auth, googleProvider } from "@/lib/firebase";
 
-const googleProvider = new GoogleAuthProvider();
+
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");

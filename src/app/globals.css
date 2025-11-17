@@ -606,6 +606,35 @@ body {
   color: #1a7f37;
 }
 
+/* ---------- PROFILE TABS (multiple profiles) ---------- */
+
+.profile-tabs {
+  margin-top: 0.75rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.profile-tab {
+  border-radius: 999px;
+  border: 1px solid #ccc;
+  background: #fff;
+  padding: 0.25rem 0.9rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.profile-tab-active {
+  border-color: #000;
+  background: #000;
+  color: #fff;
+}
+
+.profile-tab-add {
+  font-weight: 600;
+}
+
+
 /* ---------- MESSAGES PAGE ---------- */
 
 .messages-layout {

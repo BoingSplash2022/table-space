@@ -8,6 +8,7 @@ const LINKS = [
   { href: "/clips", label: "Clips" },
   { href: "/feed", label: "Feed" },
   { href: "/messages", label: "Messages" },
+  { href: "/buysell", label: "Buy/Sell" },
   { href: "/battles", label: "Battles" },
 ];
 

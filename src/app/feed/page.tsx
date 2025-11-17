@@ -1,36 +1,40 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
+import {
+  addDoc,
+  collection,
+  onSnapshot,
+  orderBy,
+  query,
+  serverTimestamp,
+  Timestamp,
+} from "firebase/firestore";
+import { db } from "../../lib/firebase";
+import { useAuthContext } from "../../context/AuthContext";
 
-type Platform = "youtube" | "soundcloud" | "mixcloud" | "other";
+type Mood = "practice" | "battle" | "clip" | "other";
 
 type FeedPost = {
-  id: number;
+  id: string;
   handle: string;
   text: string;
+  mood: Mood;
   createdAt: Date;
-  mood?: "practice" | "battle" | "clip" | "other";
-  mediaUrl?: string;
-  embedPlatform?: Platform;
-  embedUrl?: string;
+  youtubeUrl?: string;
+  soundcloudUrl?: string;
+  mixcloudUrl?: string;
 };
 
-const initialPosts: FeedPost[] = [
-  {
-    id: 1,
-    handle: "@scratchmonk",
-    text: "Locked in a 2-hour session on the 1200s. Working on reverse flares + orbit combos.",
-    createdAt: new Date(Date.now() - 1000 * 60 * 30),
-    mood: "practice",
-  },
-  {
-    id: 2,
-    handle: "@beatjugglekid",
-    text: "Who’s down for a friendly online beat juggle battle this weekend?",
-    createdAt: new Date(Date.now() - 1000 * 60 * 90),
-    mood: "battle",
-  },
-];
+type FeedPostFromDb = {
+  handle?: string;
+  text?: string;
+  mood?: Mood;
+  createdAt?: Timestamp;
+  youtubeUrl?: string | null;
+  soundcloudUrl?: string | null;
+  mixcloudUrl?: string | null;
+};
 
 function timeSince(date: Date): string {
   const diffMs = Date.now() - date.getTime();
@@ -44,98 +48,190 @@ function timeSince(date: Date): string {
   return `${days} day${days === 1 ? "" : "s"} ago`;
 }
 
-// Detect platform + embed URL from a pasted link
-function getEmbedInfo(
-  rawUrl: string | null
-): { platform: Platform; embedUrl?: string; mediaUrl?: string } {
-  if (!rawUrl) return { platform: "other" };
-  const urlStr = rawUrl.trim();
-  if (!urlStr) return { platform: "other" };
+// --- EMBED HELPERS ----------------------------------------------------
 
-  let url: URL;
+function getYoutubeEmbedUrl(url: string): string | null {
   try {
-    url = new URL(urlStr);
+    const u = new URL(url);
+    if (u.hostname.includes("youtu.be")) {
+      const id = u.pathname.replace("/", "");
+      if (!id) return null;
+      return `https://www.youtube.com/embed/${id}`;
+    }
+    if (u.hostname.includes("youtube.com")) {
+      const v = u.searchParams.get("v");
+      if (v) return `https://www.youtube.com/embed/${v}`;
+      if (u.pathname.startsWith("/embed/")) return url;
+    }
+    return null;
   } catch {
-    return { platform: "other", mediaUrl: urlStr };
+    return null;
   }
-
-  const host = url.hostname.toLowerCase();
-
-  // YouTube
-  if (host.includes("youtube.com") || host.includes("youtu.be")) {
-    let videoId: string | null = null;
-    if (host.includes("youtu.be")) {
-      videoId = url.pathname.replace("/", "");
-    } else {
-      videoId = url.searchParams.get("v");
-    }
-
-    if (videoId) {
-      return {
-        platform: "youtube",
-        embedUrl: `https://www.youtube.com/embed/${videoId}`,
-        mediaUrl: url.toString(),
-      };
-    }
-    return { platform: "youtube", mediaUrl: url.toString() };
-  }
-
-  // SoundCloud
-  if (host.includes("soundcloud.com")) {
-    const embed = `https://w.soundcloud.com/player/?url=${encodeURIComponent(
-      url.toString()
-    )}&color=%23ff5500&auto_play=false&hide_related=false&show_comments=true&show_user=true&show_reposts=false&show_teaser=true`;
-    return {
-      platform: "soundcloud",
-      embedUrl: embed,
-      mediaUrl: url.toString(),
-    };
-  }
-
-  // Mixcloud
-  if (host.includes("mixcloud.com")) {
-    const embed = `https://www.mixcloud.com/widget/iframe/?hide_cover=1&mini=1&light=1&feed=${encodeURIComponent(
-      url.toString()
-    )}`;
-    return {
-      platform: "mixcloud",
-      embedUrl: embed,
-      mediaUrl: url.toString(),
-    };
-  }
-
-  return { platform: "other", mediaUrl: url.toString() };
 }
 
-export default function FeedPage() {
-  const [posts, setPosts] = useState<FeedPost[]>(initialPosts);
+function YoutubeEmbed({ url }: { url: string }) {
+  const embedUrl = getYoutubeEmbedUrl(url);
+  if (!embedUrl) return null;
 
-  function handlePost(e: FormEvent<HTMLFormElement>) {
+  return (
+    <div className="feed-embed">
+      <iframe
+        className="embed-frame youtube"
+        src={embedUrl}
+        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+        allowFullScreen
+        loading="lazy"
+      />
+    </div>
+  );
+}
+
+function SoundcloudEmbed({ url }: { url: string }) {
+  if (!url) return null;
+  const playerUrl = `https://w.soundcloud.com/player/?url=${encodeURIComponent(
+    url
+  )}&color=%23000000&auto_play=false&hide_related=false&show_comments=true&show_user=true&show_reposts=false&show_teaser=true`;
+  return (
+    <div className="feed-embed">
+      <iframe
+        className="embed-frame soundcloud"
+        src={playerUrl}
+        allow="autoplay"
+        loading="lazy"
+      />
+    </div>
+  );
+}
+
+function MixcloudEmbed({ url }: { url: string }) {
+  if (!url) return null;
+  const widgetUrl = `https://www.mixcloud.com/widget/iframe/?hide_cover=1&mini=1&feed=${encodeURIComponent(
+    url
+  )}`;
+  return (
+    <div className="feed-embed">
+      <iframe className="embed-frame mixcloud" src={widgetUrl} loading="lazy" />
+    </div>
+  );
+}
+
+// --- TEXT AUTO-DETECTION ----------------------------------------------
+
+type DetectedMedia = {
+  textWithoutLinks: string;
+  youtubeUrl?: string;
+  soundcloudUrl?: string;
+  mixcloudUrl?: string;
+};
+
+function detectMediaLinks(rawText: string): DetectedMedia {
+  const urlRegex = /https?:\/\/\S+/gi;
+  const urls = rawText.match(urlRegex) ?? [];
+
+  let youtubeUrl: string | undefined;
+  let soundcloudUrl: string | undefined;
+  let mixcloudUrl: string | undefined;
+
+  for (const raw of urls) {
+    try {
+      const u = new URL(raw);
+
+      const host = u.hostname.toLowerCase();
+
+      if (!youtubeUrl && (host.includes("youtube.com") || host.includes("youtu.be"))) {
+        youtubeUrl = raw;
+      } else if (!soundcloudUrl && host.includes("soundcloud.com")) {
+        soundcloudUrl = raw;
+      } else if (!mixcloudUrl && host.includes("mixcloud.com")) {
+        mixcloudUrl = raw;
+      }
+    } catch {
+      // ignore malformed URLs
+    }
+  }
+
+  // strip all URLs from the text so we don't show them twice
+  const textWithoutLinks = rawText.replace(urlRegex, "").replace(/\s{2,}/g, " ").trim();
+
+  return { textWithoutLinks, youtubeUrl, soundcloudUrl, mixcloudUrl };
+}
+
+// ----------------------------------------------------------------------
+
+export default function FeedPage() {
+  const { user } = useAuthContext();
+  const [posts, setPosts] = useState<FeedPost[]>([]);
+
+  // Live feed from Firestore
+  useEffect(() => {
+    const q = query(
+      collection(db, "feedPosts"),
+      orderBy("createdAt", "desc")
+    );
+
+    const unsub = onSnapshot(q, (snap) => {
+      const rows: FeedPost[] = snap.docs.map((docSnap) => {
+        const data = docSnap.data() as FeedPostFromDb;
+        return {
+          id: docSnap.id,
+          handle: data.handle ?? "@yourdjname",
+          text: data.text ?? "",
+          mood: data.mood ?? "other",
+          createdAt: data.createdAt?.toDate() ?? new Date(),
+          youtubeUrl: data.youtubeUrl ?? undefined,
+          soundcloudUrl: data.soundcloudUrl ?? undefined,
+          mixcloudUrl: data.mixcloudUrl ?? undefined,
+        };
+      });
+
+      setPosts(rows);
+    });
+
+    return () => unsub();
+  }, []);
+
+  async function handlePost(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const form = e.currentTarget;
     const formData = new FormData(form);
 
     const handle = (formData.get("handle") as string)?.trim();
-    const text = (formData.get("text") as string)?.trim();
-    const mood = formData.get("mood") as FeedPost["mood"];
-    const mediaRaw = formData.get("mediaUrl") as string | null;
+    const rawText = (formData.get("text") as string)?.trim();
+    const mood = (formData.get("mood") as Mood) || "other";
 
-    if (!handle || !text) return;
+    // Optional explicit fields
+    let youtubeUrl = (formData.get("youtubeUrl") as string)?.trim();
+    let soundcloudUrl = (formData.get("soundcloudUrl") as string)?.trim();
+    let mixcloudUrl = (formData.get("mixcloudUrl") as string)?.trim();
 
-    const { platform, embedUrl, mediaUrl } = getEmbedInfo(mediaRaw);
+    if (!handle || !rawText) return;
+    if (!user) {
+      alert("Please sign in to post to the feed.");
+      return;
+    }
 
-    const newPost: FeedPost = {
-      id: Date.now(),
+    // Auto-detect links in the text if explicit fields are empty
+    let finalText = rawText;
+    if (!youtubeUrl && !soundcloudUrl && !mixcloudUrl) {
+      const detected = detectMediaLinks(rawText);
+      finalText = detected.textWithoutLinks || rawText;
+
+      youtubeUrl = detected.youtubeUrl ?? "";
+      soundcloudUrl = detected.soundcloudUrl ?? "";
+      mixcloudUrl = detected.mixcloudUrl ?? "";
+    }
+
+    await addDoc(collection(db, "feedPosts"), {
       handle: handle.startsWith("@") ? handle : `@${handle}`,
-      text,
-      mood: mood || "other",
-      createdAt: new Date(),
-      mediaUrl,
-      embedPlatform: platform,
-      embedUrl,
-    };
+      text: finalText,
+      mood,
+      youtubeUrl: youtubeUrl || null,
+      soundcloudUrl: soundcloudUrl || null,
+      mixcloudUrl: mixcloudUrl || null,
+      createdAt: serverTimestamp(),
+      uid: user.uid,
+    });
 
-    setPosts((prev) => [newPost, ...prev]);
     form.reset();
   }
 
@@ -149,7 +245,7 @@ export default function FeedPage() {
 
       {/* Composer */}
       <section className="feed-form">
-        <form onSubmit={handlePost}>
+        <form onSubmit={handlePost} className="feed-form-inner">
           <div className="feed-form-row">
             <div className="feed-field">
               <label className="feed-label" htmlFor="handle">
@@ -164,12 +260,16 @@ export default function FeedPage() {
                 required
               />
             </div>
-
             <div className="feed-field" style={{ maxWidth: 180 }}>
               <label className="feed-label" htmlFor="mood">
                 Type
               </label>
-              <select id="mood" name="mood" className="feed-select">
+              <select
+                id="mood"
+                name="mood"
+                className="feed-select"
+                defaultValue="practice"
+              >
                 <option value="practice">Practice</option>
                 <option value="battle">Battle</option>
                 <option value="clip">New clip</option>
@@ -178,7 +278,7 @@ export default function FeedPage() {
             </div>
           </div>
 
-          <div className="feed-field" style={{ marginBottom: "0.75rem" }}>
+          <div className="feed-field">
             <label className="feed-label" htmlFor="text">
               Post
             </label>
@@ -186,22 +286,53 @@ export default function FeedPage() {
               id="text"
               name="text"
               className="feed-textarea"
-              placeholder="What are you working on today?"
+              placeholder="What are you working on today? (Paste YouTube / SoundCloud / Mixcloud links here or use the fields below.)"
               required
             />
           </div>
 
-          <div className="feed-field" style={{ marginBottom: "0.75rem" }}>
-            <label className="feed-label" htmlFor="mediaUrl">
-              Media link (YouTube, SoundCloud, Mixcloud – optional)
-            </label>
-            <input
-              id="mediaUrl"
-              name="mediaUrl"
-              type="url"
-              className="feed-input"
-              placeholder="https://youtube.com/... or https://soundcloud.com/... or https://mixcloud.com/..."
-            />
+          {/* Explicit media link fields – optional, override auto-detect */}
+          <div className="feed-form-row">
+            <div className="feed-field">
+              <label className="feed-label" htmlFor="youtubeUrl">
+                YouTube link (optional)
+              </label>
+              <input
+                id="youtubeUrl"
+                name="youtubeUrl"
+                type="url"
+                className="feed-input"
+                placeholder="https://www.youtube.com/watch?v=..."
+              />
+            </div>
+          </div>
+
+          <div className="feed-form-row">
+            <div className="feed-field">
+              <label className="feed-label" htmlFor="soundcloudUrl">
+                SoundCloud link (optional)
+              </label>
+              <input
+                id="soundcloudUrl"
+                name="soundcloudUrl"
+                type="url"
+                className="feed-input"
+                placeholder="https://soundcloud.com/your-track"
+              />
+            </div>
+
+            <div className="feed-field">
+              <label className="feed-label" htmlFor="mixcloudUrl">
+                Mixcloud link (optional)
+              </label>
+              <input
+                id="mixcloudUrl"
+                name="mixcloudUrl"
+                type="url"
+                className="feed-input"
+                placeholder="https://www.mixcloud.com/your-mix"
+              />
+            </div>
           </div>
 
           <div className="feed-submit-row">
@@ -213,10 +344,11 @@ export default function FeedPage() {
       </section>
 
       {/* Feed list */}
-      <section>
+      <section className="feed-list">
         {posts.map((post) => {
           const initial =
-            post.handle.replace("@", "").trim().charAt(0).toUpperCase() || "D";
+            post.handle.replace("@", "").trim().charAt(0).toUpperCase() ||
+            "D";
 
           let moodLabel: string | undefined;
           let moodClass = "feed-mood";
@@ -228,7 +360,7 @@ export default function FeedPage() {
             moodLabel = "Battle";
             moodClass += " battle";
           } else if (post.mood === "clip") {
-            moodLabel = "New clip";
+            moodLabel = "New Clip";
             moodClass += " clip";
           }
 
@@ -242,24 +374,18 @@ export default function FeedPage() {
                   <span className="feed-time">
                     {timeSince(post.createdAt)}
                   </span>
-                  {moodLabel && <span className={moodClass}>{moodLabel}</span>}
+                  {moodLabel && (
+                    <span className={moodClass}>{moodLabel}</span>
+                  )}
                 </div>
 
-                <p>{post.text}</p>
+                <p className="feed-text">{post.text}</p>
 
-                {/* Media embed if present */}
-                {post.embedUrl && post.embedPlatform !== "other" && (
-                  <div className="feed-embed">
-                    <iframe
-                      className={`embed-frame ${post.embedPlatform}`}
-                      src={post.embedUrl}
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                      allowFullScreen={post.embedPlatform === "youtube"}
-                      loading="lazy"
-                      title={`media-${post.id}`}
-                    />
-                  </div>
+                {post.youtubeUrl && <YoutubeEmbed url={post.youtubeUrl} />}
+                {post.soundcloudUrl && (
+                  <SoundcloudEmbed url={post.soundcloudUrl} />
                 )}
+                {post.mixcloudUrl && <MixcloudEmbed url={post.mixcloudUrl} />}
               </div>
             </article>
           );
