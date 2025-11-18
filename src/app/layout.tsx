@@ -6,6 +6,7 @@ import NavBar from "@/components/NavBar";
 import { AuthProvider } from "@/context/AuthContext";
 import LoginToast from "@/components/LoginToast";
 import ChatDock from "@/components/ChatDock";
+import ActiveProfileBadge from "@/components/ActiveProfileBadge";
 
 export const metadata = {
   title: "TableSpace",
@@ -21,19 +22,26 @@ export default function RootLayout({
     <html lang="en">
       <body className="min-h-screen">
         <AuthProvider>
-          {/* Header: logo + wordmark */}
+          {/* Header: logo + wordmark + active profile badge */}
           <header className="site-header">
-            <Link href="/" className="site-header-logo">
-              <Image
-                src="/table-space-logo.png"
-                alt="TableSpace logo"
-                width={80}
-                height={80}
-                className="site-header-logo-img"
-                priority
-              />
-            </Link>
-            <div className="site-header-wordmark">TABLESPACE</div>
+            <div className="site-header-left">
+              <Link href="/" className="site-header-logo">
+                <Image
+                  src="/table-space-logo.png"
+                  alt="TableSpace logo"
+                  width={80}
+                  height={80}
+                  className="site-header-logo-img"
+                  priority
+                />
+              </Link>
+              <div className="site-header-wordmark">TABLESPACE</div>
+            </div>
+
+            <div className="site-header-right">
+              {/* Who you are signed in as */}
+              <ActiveProfileBadge />
+            </div>
           </header>
 
           {/* Navigation bar */}
@@ -52,4 +60,5 @@ export default function RootLayout({
     </html>
   );
 }
+
 
