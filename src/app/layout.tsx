@@ -23,26 +23,24 @@ export default function RootLayout({
       <body className="min-h-screen">
         <AuthProvider>
           {/* Header: logo + wordmark + active profile badge */}
-          <header className="site-header">
-            <div className="site-header-left">
-              <Link href="/" className="site-header-logo">
-                <Image
-                  src="/table-space-logo.png"
-                  alt="TableSpace logo"
-                  width={80}
-                  height={80}
-                  className="site-header-logo-img"
-                  priority
-                />
-              </Link>
-              <div className="site-header-wordmark">TABLESPACE</div>
-            </div>
+          <header className="site-header" style={{
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: "0.5rem", // space between logo and text
+}}>
+  <Link href="/" className="site-header-logo">
+    <Image
+      src="/table-space-logo.png"
+      alt="TableSpace logo"
+      width={80}
+      height={80}
+      priority
+    />
+  </Link>
+  <div className="site-header-wordmark">TABLESPACE</div>
+</header>
 
-            <div className="site-header-right">
-              {/* Who you are signed in as */}
-              <ActiveProfileBadge />
-            </div>
-          </header>
 
           {/* Navigation bar */}
           <NavBar />

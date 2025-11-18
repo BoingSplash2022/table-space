@@ -1,359 +1,457 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import {
+  ChangeEvent,
+  FormEvent,
+  useEffect,
+  useState,
+} from "react";
 import {
   addDoc,
   collection,
-  DocumentData,
   onSnapshot,
   orderBy,
   query,
   serverTimestamp,
+  Timestamp,
 } from "firebase/firestore";
-import { useRouter } from "next/navigation";
-import { db, auth } from "@/lib/firebase";
+import Link from "next/link";
+import { db } from "@/lib/firebase";
+import { useAuthContext } from "@/context/AuthContext";
 
-type Listing = {
+type ListingState = {
+  handle: string;
+  itemTitle: string;
+  format: string; // Vinyl / Digital / Merch / Other
+  condition: string;
+  priceCurrency: string; // £ / $ / €
+  priceValue: string;
+  link: string;
+  description: string;
+};
+
+type ListingDocFromDb = ListingState & {
+  uid: string;
+  createdAt?: Timestamp;
+};
+
+type ListingDoc = ListingState & {
   id: string;
   uid: string;
-  handle: string;
-  title: string;
-  description: string;
-  price: string;
-  currency: string;
-  format: string;
-  condition: string;
-  link: string;
   createdAt: Date | null;
 };
 
-const FORMATS = ["Vinyl", "Digital", "Merch", "Other"];
-const CONDITIONS = ["New", "Mint", "VG+", "VG", "Good", "Used", "Other"];
+const emptyListing: ListingState = {
+  handle: "",
+  itemTitle: "",
+  format: "Vinyl",
+  condition: "VG+",
+  priceCurrency: "£",
+  priceValue: "",
+  link: "",
+  description: "",
+};
+
+// ---------- helper for icons ----------
+function iconForFormat(format: string) {
+  const f = format.toLowerCase();
+  if (f === "vinyl") return "/icons/vinyl.svg";
+  if (f === "digital") return "/icons/digital.svg";
+  if (f === "merch" || f === "merchandise") return "/icons/merch.svg";
+  return "/icons/other.svg";
+}
 
 export default function BuySellPage() {
-  const router = useRouter();
+  const { user, activeProfile } = useAuthContext();
 
-  const [listings, setListings] = useState<Listing[]>([]);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [form, setForm] = useState<ListingState>(emptyListing);
+  const [listings, setListings] = useState<ListingDoc[]>([]);
+  const [submitting, setSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Form state
-  const [handle, setHandle] = useState("");
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [price, setPrice] = useState("");
-  const [currency, setCurrency] = useState("£");
-  const [format, setFormat] = useState("Vinyl");
-  const [condition, setCondition] = useState("VG+");
-  const [link, setLink] = useState("");
-
-  // --- Load listings in real time from Firestore ---
+  // When activeProfile changes, prefill handle
   useEffect(() => {
-    const listingsRef = collection(db, "buySellListings");
-    const q = query(listingsRef, orderBy("createdAt", "desc"));
+    if (activeProfile) {
+      setForm((prev) => ({
+        ...prev,
+        handle: activeProfile.handle || prev.handle,
+      }));
+    }
+  }, [activeProfile]);
 
-    const unsubscribe = onSnapshot(
+  // Load listings
+  useEffect(() => {
+    const ref = collection(db, "buySellListings");
+    const q = query(ref, orderBy("createdAt", "desc"));
+
+    const unsub = onSnapshot(
       q,
-      (snapshot) => {
-        const next: Listing[] = snapshot.docs.map((doc) => {
-          const data = doc.data() as DocumentData;
+      (snap) => {
+        const rows: ListingDoc[] = snap.docs.map((d) => {
+          const data = d.data() as ListingDocFromDb;
           return {
-            id: doc.id,
-            uid: (data.uid as string) ?? "",
-            handle: (data.handle as string) ?? "",
-            title: (data.title as string) ?? "",
-            description: (data.description as string) ?? "",
-            price: (data.price as string) ?? "",
-            currency: (data.currency as string) ?? "",
-            format: (data.format as string) ?? "",
-            condition: (data.condition as string) ?? "",
-            link: (data.link as string) ?? "",
-            createdAt: data.createdAt?.toDate
-              ? (data.createdAt.toDate() as Date)
-              : null,
+            id: d.id,
+            uid: data.uid,
+            handle: data.handle ?? "",
+            itemTitle: data.itemTitle ?? "",
+            format: data.format ?? "",
+            condition: data.condition ?? "",
+            priceCurrency: data.priceCurrency ?? "£",
+            priceValue: data.priceValue ?? "",
+            link: data.link ?? "",
+            description: data.description ?? "",
+            createdAt: data.createdAt ? data.createdAt.toDate() : null,
           };
         });
-
-        setListings(next);
+        setListings(rows);
       },
       (err) => {
-        console.error("Error loading listings:", err);
-        setError("Could not load listings from the server.");
+        console.error("Error loading buy/sell listings", err);
       }
     );
 
-    return () => unsubscribe();
+    return () => unsub();
   }, []);
 
-  // --- Submit listing to Firestore ---
+  function handleChange(
+    e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
+  ) {
+    const { name, value } = e.target;
+    setForm((prev) => ({ ...prev, [name]: value }));
+  }
+
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    setError(null);
+    setErrorMessage(null);
 
-    const user = auth.currentUser;
-    if (!user) {
-      setError("You need to be signed in to post a listing.");
+    if (!user || !activeProfile) {
+      setErrorMessage("Please sign in and create a profile before posting.");
       return;
     }
 
-    if (!handle.trim() || !title.trim() || !link.trim()) {
-      setError("Handle, title, and link are required.");
+    if (!form.itemTitle.trim() || !form.link.trim()) {
+      setErrorMessage("Please add an item title and a product link.");
       return;
     }
 
-    setIsSubmitting(true);
     try {
-      const listingsRef = collection(db, "buySellListings");
+      setSubmitting(true);
 
-      await addDoc(listingsRef, {
+      const ref = collection(db, "buySellListings");
+      await addDoc(ref, {
+        ...form,
+        handle:
+          form.handle && form.handle.trim().length > 0
+            ? form.handle
+            : activeProfile.handle,
         uid: user.uid,
-        handle: handle.trim().startsWith("@")
-          ? handle.trim()
-          : `@${handle.trim()}`,
-        title: title.trim(),
-        description: description.trim(),
-        price: price.trim(),
-        currency: currency.trim(),
-        format,
-        condition,
-        link: link.trim(),
         createdAt: serverTimestamp(),
       });
 
-      // Clear a subset of fields after successful submit
-      setTitle("");
-      setDescription("");
-      setPrice("");
-      setLink("");
+      setForm((prev) => ({
+        ...emptyListing,
+        handle: activeProfile.handle,
+        format: prev.format,
+        condition: prev.condition,
+        priceCurrency: prev.priceCurrency,
+      }));
     } catch (err) {
-      console.error("Error adding listing:", err);
-      setError("Could not save your listing. Please try again.");
+      console.error("Error posting listing", err);
+      setErrorMessage("Could not post listing. Please try again.");
     } finally {
-      setIsSubmitting(false);
+      setSubmitting(false);
     }
   }
 
-  // --- Message seller button ---
-  function messageSeller(listing: Listing) {
-    const params = new URLSearchParams({
-      seller: listing.handle,
-      listingTitle: listing.title,
-    });
-
-    router.push(`/messages?${params.toString()}`);
-  }
+  const canPost = Boolean(user && activeProfile);
 
   return (
-    <div className="main-shell">
-      {/* Header */}
-      <header className="clips-header">
+    <div className="feed">
+      <div className="feed-header">
         <h1>Buy / Sell</h1>
         <p>
-          List scratch records, battle tools, mixers and more. Paste links to
+          List scratch records, battle tools, mixers and merch. Paste links to
           Bandcamp, your web shop, Discogs, etc.
         </p>
-      </header>
+      </div>
 
-      {/* Composer card */}
-      <section className="clips-form">
+      {/* FORM */}
+      <section className="feed-form">
+        {!canPost && (
+          <p className="auth-error" style={{ marginBottom: "0.75rem" }}>
+            Please sign in and create a profile before posting a listing.
+          </p>
+        )}
+
         <form onSubmit={handleSubmit}>
-          <div className="clips-form-row">
-            <div className="clips-field">
-              <label className="clips-label" htmlFor="handle">
-                Handle
-              </label>
-              <input
-                id="handle"
-                className="clips-input"
-                placeholder="@yourdjname"
-                value={handle}
-                onChange={(e) => setHandle(e.target.value)}
-              />
-            </div>
-
-            <div className="clips-field">
-              <label className="clips-label" htmlFor="title">
-                Item title
-              </label>
-              <input
-                id="title"
-                className="clips-input"
-                placeholder='Scratch 12" / battle tool / mixer / etc.'
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-              />
-            </div>
+          <div className="feed-field">
+            <label className="feed-label" htmlFor="handle">
+              Handle
+            </label>
+            <input
+              id="handle"
+              name="handle"
+              type="text"
+              className="feed-input"
+              placeholder="@yourdjname"
+              value={form.handle}
+              onChange={handleChange}
+            />
           </div>
 
-          <div className="clips-form-row">
-            <div className="clips-field">
-              <label className="clips-label" htmlFor="format">
+          <div className="feed-field">
+            <label className="feed-label" htmlFor="itemTitle">
+              Item title
+            </label>
+            <input
+              id="itemTitle"
+              name="itemTitle"
+              type="text"
+              className="feed-input"
+              placeholder='Scratch 12" / battle tool / mixer / etc.'
+              value={form.itemTitle}
+              onChange={handleChange}
+            />
+          </div>
+
+          {/* format / condition / price */}
+          <div className="feed-field-row">
+            <div className="feed-field">
+              <label className="feed-label" htmlFor="format">
                 Format
               </label>
               <select
                 id="format"
-                className="clips-input"
-                value={format}
-                onChange={(e) => setFormat(e.target.value)}
+                name="format"
+                className="feed-input"
+                value={form.format}
+                onChange={handleChange}
               >
-                {FORMATS.map((opt) => (
-                  <option key={opt} value={opt}>
-                    {opt}
-                  </option>
-                ))}
+                <option value="Vinyl">Vinyl</option>
+                <option value="Digital">Digital</option>
+                <option value="Merch">Merch</option>
+                <option value="Other">Other</option>
               </select>
             </div>
 
-            <div className="clips-field">
-              <label className="clips-label" htmlFor="condition">
+            <div className="feed-field">
+              <label className="feed-label" htmlFor="condition">
                 Condition
               </label>
               <select
                 id="condition"
-                className="clips-input"
-                value={condition}
-                onChange={(e) => setCondition(e.target.value)}
+                name="condition"
+                className="feed-input"
+                value={form.condition}
+                onChange={handleChange}
               >
-                {CONDITIONS.map((opt) => (
-                  <option key={opt} value={opt}>
-                    {opt}
-                  </option>
-                ))}
+                <option value="Mint">Mint</option>
+                <option value="NM">NM</option>
+                <option value="VG+">VG+</option>
+                <option value="VG">VG</option>
+                <option value="G">G</option>
               </select>
             </div>
 
-            <div className="clips-field">
-              <label className="clips-label" htmlFor="price">
-                Price
-              </label>
-              <div style={{ display: "flex", gap: "0.4rem" }}>
+            <div className="feed-field" style={{ maxWidth: 220 }}>
+              <label className="feed-label">Price</label>
+              <div style={{ display: "flex", gap: "0.25rem" }}>
                 <select
-                  className="clips-input"
-                  style={{ maxWidth: "4.5rem" }}
-                  value={currency}
-                  onChange={(e) => setCurrency(e.target.value)}
+                  name="priceCurrency"
+                  className="feed-input"
+                  style={{ maxWidth: 70 }}
+                  value={form.priceCurrency}
+                  onChange={handleChange}
                 >
                   <option value="£">£</option>
                   <option value="$">$</option>
                   <option value="€">€</option>
                 </select>
                 <input
-                  id="price"
-                  className="clips-input"
+                  name="priceValue"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  className="feed-input"
+                  value={form.priceValue}
+                  onChange={handleChange}
                   placeholder="25.00"
-                  value={price}
-                  onChange={(e) => setPrice(e.target.value)}
                 />
               </div>
             </div>
           </div>
 
-          <div className="clips-field">
-            <label className="clips-label" htmlFor="link">
+          <div className="feed-field">
+            <label className="feed-label" htmlFor="link">
               Store / Bandcamp / product link
             </label>
             <input
               id="link"
-              className="clips-input"
+              name="link"
+              type="url"
+              className="feed-input"
               placeholder="https://your-shop.com/product/..."
-              value={link}
-              onChange={(e) => setLink(e.target.value)}
+              value={form.link}
+              onChange={handleChange}
             />
           </div>
 
-          <div className="clips-field" style={{ marginTop: "0.75rem" }}>
-            <label className="clips-label" htmlFor="description">
+          <div className="feed-field">
+            <label className="feed-label" htmlFor="description">
               Description (optional)
             </label>
             <textarea
               id="description"
-              className="clips-textarea"
+              name="description"
+              className="feed-textarea"
+              rows={3}
               placeholder="Pressing info, tracklist, shipping details, etc."
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
+              value={form.description}
+              onChange={handleChange}
             />
           </div>
 
-          {error && (
-            <p className="auth-error" style={{ marginTop: "0.75rem" }}>
-              {error}
+          {errorMessage && (
+            <p className="auth-error" style={{ marginTop: "0.5rem" }}>
+              {errorMessage}
             </p>
           )}
 
-          <div className="clips-submit-row" style={{ marginTop: "0.75rem" }}>
+          <div className="feed-submit-row" style={{ marginTop: "0.75rem" }}>
             <button
               type="submit"
-              className="clips-submit"
-              disabled={isSubmitting}
+              className="feed-submit"
+              disabled={!canPost || submitting}
             >
-              {isSubmitting ? "Posting…" : "Post listing"}
+              {submitting ? "Posting…" : "Post listing"}
             </button>
           </div>
         </form>
       </section>
 
-      {/* Listings list */}
-      <section className="clips-list">
-        {listings.map((listing) => (
-          <article key={listing.id} className="clip-card">
-            <div className="clip-card-header">
-              <div>
-                <div className="clip-title">{listing.title}</div>
-                <div className="clip-meta">
-                  {listing.handle}{" "}
-                  {listing.format && `• ${listing.format}`}
-                  {listing.condition && ` • ${listing.condition}`}
-                  {listing.price &&
-                    ` • ${listing.currency || ""}${listing.price}`}
-                  {listing.createdAt &&
-                    ` • ${listing.createdAt.toLocaleDateString()}`}
-                </div>
-              </div>
-            </div>
+      {/* LISTINGS */}
+      <section style={{ marginTop: "1.5rem" }}>
+        {listings.map((listing) => {
+          const dateLabel = listing.createdAt
+            ? listing.createdAt.toLocaleDateString("en-GB")
+            : "";
 
-            {listing.description && (
-              <p className="clip-description">{listing.description}</p>
-            )}
+          const iconSrc = iconForFormat(listing.format);
 
-            <div
+          return (
+            <article
+              key={listing.id}
+              className="feed-card"
               style={{
                 display: "flex",
+                flexDirection: "column",
                 gap: "0.5rem",
-                marginTop: "0.5rem",
-                flexWrap: "wrap",
+                marginBottom: "1rem",
               }}
             >
-              {listing.link && (
-                <a
-                  href={listing.link}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="auth-link"
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "flex-start",
+                  gap: "1rem",
+                }}
+              >
+                <div>
+                  <h3
+                    style={{
+                      fontWeight: 600,
+                      marginBottom: "0.15rem",
+                    }}
+                  >
+                    {listing.itemTitle}
+                  </h3>
+                  <div
+                    style={{
+                      fontSize: "0.8rem",
+                      opacity: 0.75,
+                    }}
+                  >
+                    <span>{listing.handle}</span>
+                    {" · "}
+                    <span>{listing.format}</span>
+                    {" · "}
+                    <span>{listing.condition}</span>
+                    {" · "}
+                    {listing.priceCurrency}
+                    {listing.priceValue}
+                    {dateLabel ? ` · ${dateLabel}` : ""}
+                  </div>
+                </div>
+
+                {/* format icon on the right */}
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={iconSrc}
+                  alt={listing.format}
+                  width={26}
+                  height={26}
+                  style={{ opacity: 0.9 }}
+                />
+              </div>
+
+              {listing.description && (
+                <p
+                  style={{
+                    fontSize: "0.9rem",
+                  }}
                 >
-                  View listing
-                </a>
+                  {listing.description}
+                </p>
               )}
 
-              <button
-                type="button"
-                className="battle-vote-btn"
-                onClick={() => messageSeller(listing)}
+              <div
+                style={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  gap: "0.75rem",
+                  marginTop: "0.5rem",
+                }}
               >
-                Message seller
-              </button>
-            </div>
-          </article>
-        ))}
+                {listing.link && (
+                  <a
+                    href={listing.link}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="buy-link"
+                    style={{ fontWeight: 600 }}
+                  >
+                    View listing
+                  </a>
+                )}
+
+                <Link
+                  href={{
+                    pathname: "/messages",
+                    query: {
+                      seller: listing.handle,
+                      listingTitle: listing.itemTitle,
+                    },
+                  }}
+                  className="messages-compose-send"
+                >
+                  Message seller
+                </Link>
+              </div>
+            </article>
+          );
+        })}
 
         {listings.length === 0 && (
-          <p className="auth-subnote">
-            No listings yet. Drop your first scratch record or battle tool.
+          <p style={{ marginTop: "1rem", fontSize: "0.9rem" }}>
+            No listings yet. Be the first to post something for sale.
           </p>
         )}
       </section>
     </div>
   );
 }
+
 
 
 
