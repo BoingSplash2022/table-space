@@ -1,5 +1,10 @@
 "use client";
 
+/* eslint-disable react-hooks/set-state-in-effect */
+/* eslint-disable react/no-unescaped-entities */
+/* eslint-disable @typescript-eslint/no-explicit-any */
+/* eslint-disable @next/next/no-img-element */
+
 import {
   ChangeEvent,
   FormEvent,
@@ -19,7 +24,8 @@ import {
   where,
 } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
-import { auth, db, storage } from "@/lib/firebase";
+import { db, storage } from "@/lib/firebase";
+import { useAuthContext } from "@/context/AuthContext";
 
 type ProfileState = {
   displayName: string;
@@ -63,8 +69,8 @@ const emptyProfile: ProfileState = {
 };
 
 const defaultProfile: ProfileState = {
-  displayName: "Anon Turntablist",
-  handle: "@yourdjname",
+  displayName: "",
+  handle: "",
   location: "",
   bio: "",
   styles: "",
@@ -77,6 +83,8 @@ const defaultProfile: ProfileState = {
 };
 
 export default function ProfilePage() {
+  const { user } = useAuthContext();
+
   const [profiles, setProfiles] = useState<ProfileDoc[]>([]);
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
   const [form, setForm] = useState<ProfileState>(defaultProfile);
@@ -87,12 +95,16 @@ export default function ProfilePage() {
 
   // Load all profiles for the current user
   useEffect(() => {
-    const user = auth.currentUser;
     if (!user) {
       setErrorMessage("Please sign in to edit your profile.");
+      setProfiles([]);
+      setActiveProfileId(null);
       setLoading(false);
       return;
     }
+
+    setErrorMessage(null);
+    setLoading(true);
 
     const profilesRef = collection(db, "profiles");
     const q = query(
@@ -133,7 +145,7 @@ export default function ProfilePage() {
         }
 
         if (list.length === 0) {
-          setForm(defaultProfile);
+          setForm(emptyProfile);
           setAvatarPreview(null);
         }
       },
@@ -145,10 +157,10 @@ export default function ProfilePage() {
     );
 
     return () => unsub();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [user, activeProfileId]);
 
-  // Keep form in sync when active profile changes
+  // Keep form in sync when active profile changes,
+  // and use the stored avatarUrl as the preview.
   useEffect(() => {
     if (!activeProfileId) return;
     const current = profiles.find((p) => p.id === activeProfileId);
@@ -166,7 +178,7 @@ export default function ProfilePage() {
         youtube: current.youtube,
         avatarUrl: current.avatarUrl,
       });
-      setAvatarPreview(null); // show saved avatar by default
+      setAvatarPreview(current.avatarUrl || null);
     }
   }, [activeProfileId, profiles]);
 
@@ -177,17 +189,17 @@ export default function ProfilePage() {
     setForm((prev) => ({ ...prev, [name]: value }));
   }
 
+  // Upload avatar + persist avatarUrl to Firestore
   async function handleAvatarChange(e: ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const user = auth.currentUser;
     if (!user) {
       setErrorMessage("You must be signed in to upload an avatar.");
       return;
     }
 
-    // Show a local preview immediately
+    // Local preview immediately
     const localUrl = URL.createObjectURL(file);
     setAvatarPreview(localUrl);
 
@@ -203,9 +215,34 @@ export default function ProfilePage() {
       // Get public URL
       const downloadUrl = await getDownloadURL(storageRef);
 
-      // Switch preview to hosted version
+      // Update local state so UI shows new avatar
       setAvatarPreview(downloadUrl);
       setForm((prev) => ({ ...prev, avatarUrl: downloadUrl }));
+
+      // Persist avatarUrl to Firestore
+      if (activeProfileId) {
+        // Update existing profile
+        const refDoc = doc(db, "profiles", activeProfileId);
+        await setDoc(
+          refDoc,
+          {
+            avatarUrl: downloadUrl,
+            uid: user.uid,
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
+      } else {
+        // No profile yet: create one on the fly
+        const refDoc = await addDoc(collection(db, "profiles"), {
+          ...form,
+          avatarUrl: downloadUrl,
+          uid: user.uid,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        setActiveProfileId(refDoc.id);
+      }
     } catch (err) {
       console.error("Error uploading avatar", err);
       setErrorMessage("Could not upload avatar. Please try again.");
@@ -216,11 +253,14 @@ export default function ProfilePage() {
     e.preventDefault();
     setErrorMessage(null);
 
-    const user = auth.currentUser;
     if (!user) {
       setErrorMessage("You must be signed in to save your profile.");
       return;
     }
+
+    const normalizedHandle = form.handle.trim().startsWith("@")
+      ? form.handle.trim()
+      : `@${form.handle.trim()}`;
 
     try {
       if (activeProfileId) {
@@ -228,7 +268,8 @@ export default function ProfilePage() {
         await setDoc(
           refDoc,
           {
-            ...form,
+            ...form, // includes avatarUrl
+            handle: normalizedHandle,
             uid: user.uid,
             updatedAt: serverTimestamp(),
           },
@@ -237,6 +278,7 @@ export default function ProfilePage() {
       } else {
         const refDoc = await addDoc(collection(db, "profiles"), {
           ...form,
+          handle: normalizedHandle,
           uid: user.uid,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
@@ -244,7 +286,7 @@ export default function ProfilePage() {
         setActiveProfileId(refDoc.id);
       }
 
-      setSavedMessage("Profile updated.");
+      setSavedMessage("Profile saved!");
       setTimeout(() => setSavedMessage(null), 2000);
     } catch (err) {
       console.error("Error saving profile", err);
@@ -254,19 +296,13 @@ export default function ProfilePage() {
 
   async function handleAddNewProfile() {
     setErrorMessage(null);
-    const user = auth.currentUser;
     if (!user) {
       setErrorMessage("Please sign in to create a profile.");
       return;
     }
 
     try {
-      const newProfile: ProfileState = {
-        ...emptyProfile,
-        displayName: "New Profile",
-        handle: "@yourdjname",
-      };
-
+      const newProfile: ProfileState = { ...emptyProfile };
       const refDoc = await addDoc(collection(db, "profiles"), {
         ...newProfile,
         uid: user.uid,
@@ -284,7 +320,7 @@ export default function ProfilePage() {
   }
 
   const currentHandleFirstLetter =
-    form.handle.replace("@", "").trim().charAt(0).toUpperCase() || "D";
+    form.handle.replace("@", "").trim().charAt(0).toUpperCase() || "T";
 
   const avatarSrc = avatarPreview || form.avatarUrl || null;
 
@@ -294,8 +330,7 @@ export default function ProfilePage() {
         <h1>Profile</h1>
         <p>
           Set your handle, bio, links and avatar so other turntablists know
-          who&apos;s behind the cuts. You can keep multiple profiles for
-          different aliases.
+          who&apos;s behind the cuts.
         </p>
       </div>
 
@@ -354,7 +389,7 @@ export default function ProfilePage() {
         </p>
       )}
 
-      {!loading && (
+      {!loading && user && (
         <form onSubmit={handleSubmit}>
           <div className="profile-grid">
             {/* LEFT: main details */}
@@ -465,7 +500,6 @@ export default function ProfilePage() {
                     onChange={handleAvatarChange}
                     className="feed-input"
                   />
-                  
                 </div>
               </div>
 
@@ -561,6 +595,8 @@ export default function ProfilePage() {
     </div>
   );
 }
+
+
 
 
 
