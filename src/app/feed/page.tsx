@@ -161,13 +161,11 @@ function detectMediaLinks(rawText: string): DetectedMedia {
 export default function FeedPage() {
   const { user } = useAuthContext();
   const [posts, setPosts] = useState<FeedPost[]>([]);
+  const [showForm, setShowForm] = useState(false); // 👈 NEW TOGGLE
 
   // Live feed from Firestore
   useEffect(() => {
-    const q = query(
-      collection(db, "feedPosts"),
-      orderBy("createdAt", "desc")
-    );
+    const q = query(collection(db, "feedPosts"), orderBy("createdAt", "desc"));
 
     const unsub = onSnapshot(q, (snap) => {
       const rows: FeedPost[] = snap.docs.map((docSnap) => {
@@ -233,6 +231,7 @@ export default function FeedPage() {
     });
 
     form.reset();
+    setShowForm(false); // 👈 collapse after successful post
   }
 
   return (
@@ -243,112 +242,131 @@ export default function FeedPage() {
         <p>Share what you&apos;re practicing, planning or battling.</p>
       </div>
 
-      {/* Composer */}
-      <section className="feed-form">
-        <form onSubmit={handlePost} className="feed-form-inner">
-          <div className="feed-form-row">
+      {/* Centered toggle button */}
+      <div
+        style={{
+          marginBottom: "0.75rem",
+          display: "flex",
+          justifyContent: "center",
+        }}
+      >
+        <button
+          type="button"
+          onClick={() => setShowForm((prev) => !prev)}
+          className="messages-compose-send"
+          style={{ minWidth: "180px", textAlign: "center" }}
+        >
+          {showForm ? "Cancel post ⌃" : "Drop post ⌄"}
+        </button>
+      </div>
+
+      {/* Composer (collapsible) */}
+      {showForm && (
+        <section className="feed-form">
+          <form onSubmit={handlePost} className="feed-form-inner">
+            <div className="feed-form-row">
+              <div className="feed-field">
+                <label className="feed-label" htmlFor="handle">
+                  Handle
+                </label>
+                <input
+                  id="handle"
+                  name="handle"
+                  type="text"
+                  className="feed-input"
+                  placeholder="@yourdjname"
+                  required
+                />
+              </div>
+              <div className="feed-field" style={{ maxWidth: 180 }}>
+                <label className="feed-label" htmlFor="mood">
+                  Type
+                </label>
+                <select
+                  id="mood"
+                  name="mood"
+                  className="feed-select"
+                  defaultValue="practice"
+                >
+                  <option value="practice">Practice</option>
+                  <option value="battle">Battle</option>
+                  <option value="clip">New clip</option>
+                  <option value="other">Other</option>
+                </select>
+              </div>
+            </div>
+
             <div className="feed-field">
-              <label className="feed-label" htmlFor="handle">
-                Handle
+              <label className="feed-label" htmlFor="text">
+                Post
               </label>
-              <input
-                id="handle"
-                name="handle"
-                type="text"
-                className="feed-input"
-                placeholder="@yourdjname"
+              <textarea
+                id="text"
+                name="text"
+                className="feed-textarea"
+                placeholder="What are you working on today? (Paste YouTube / SoundCloud / Mixcloud links here or use the fields below.)"
                 required
               />
             </div>
-            <div className="feed-field" style={{ maxWidth: 180 }}>
-              <label className="feed-label" htmlFor="mood">
-                Type
-              </label>
-              <select
-                id="mood"
-                name="mood"
-                className="feed-select"
-                defaultValue="practice"
-              >
-                <option value="practice">Practice</option>
-                <option value="battle">Battle</option>
-                <option value="clip">New clip</option>
-                <option value="other">Other</option>
-              </select>
-            </div>
-          </div>
 
-          <div className="feed-field">
-            <label className="feed-label" htmlFor="text">
-              Post
-            </label>
-            <textarea
-              id="text"
-              name="text"
-              className="feed-textarea"
-              placeholder="What are you working on today? (Paste YouTube / SoundCloud / Mixcloud links here or use the fields below.)"
-              required
-            />
-          </div>
-
-          {/* Explicit media link fields – optional, override auto-detect */}
-          <div className="feed-form-row">
-            <div className="feed-field">
-              <label className="feed-label" htmlFor="youtubeUrl">
-                YouTube link (optional)
-              </label>
-              <input
-                id="youtubeUrl"
-                name="youtubeUrl"
-                type="url"
-                className="feed-input"
-                placeholder="https://www.youtube.com/watch?v=..."
-              />
-            </div>
-          </div>
-
-          <div className="feed-form-row">
-            <div className="feed-field">
-              <label className="feed-label" htmlFor="soundcloudUrl">
-                SoundCloud link (optional)
-              </label>
-              <input
-                id="soundcloudUrl"
-                name="soundcloudUrl"
-                type="url"
-                className="feed-input"
-                placeholder="https://soundcloud.com/your-track"
-              />
+            {/* Explicit media link fields – optional, override auto-detect */}
+            <div className="feed-form-row">
+              <div className="feed-field">
+                <label className="feed-label" htmlFor="youtubeUrl">
+                  YouTube link (optional)
+                </label>
+                <input
+                  id="youtubeUrl"
+                  name="youtubeUrl"
+                  type="url"
+                  className="feed-input"
+                  placeholder="https://www.youtube.com/watch?v=..."
+                />
+              </div>
             </div>
 
-            <div className="feed-field">
-              <label className="feed-label" htmlFor="mixcloudUrl">
-                Mixcloud link (optional)
-              </label>
-              <input
-                id="mixcloudUrl"
-                name="mixcloudUrl"
-                type="url"
-                className="feed-input"
-                placeholder="https://www.mixcloud.com/your-mix"
-              />
-            </div>
-          </div>
+            <div className="feed-form-row">
+              <div className="feed-field">
+                <label className="feed-label" htmlFor="soundcloudUrl">
+                  SoundCloud link (optional)
+                </label>
+                <input
+                  id="soundcloudUrl"
+                  name="soundcloudUrl"
+                  type="url"
+                  className="feed-input"
+                  placeholder="https://soundcloud.com/your-track"
+                />
+              </div>
 
-          <div className="feed-submit-row">
-            <button type="submit" className="feed-submit">
-              Drop post
-            </button>
-          </div>
-        </form>
-      </section>
+              <div className="feed-field">
+                <label className="feed-label" htmlFor="mixcloudUrl">
+                  Mixcloud link (optional)
+                </label>
+                <input
+                  id="mixcloudUrl"
+                  name="mixcloudUrl"
+                  type="url"
+                  className="feed-input"
+                  placeholder="https://www.mixcloud.com/your-mix"
+                />
+              </div>
+            </div>
+
+            <div className="feed-submit-row">
+              <button type="submit" className="feed-submit">
+                Drop post
+              </button>
+            </div>
+          </form>
+        </section>
+      )}
 
       {/* Feed list */}
       <section className="feed-list">
         {posts.map((post) => {
           const initial =
-            post.handle.replace("@", "").trim().charAt(0).toUpperCase() ||
-            "D";
+            post.handle.replace("@", "").trim().charAt(0).toUpperCase() || "D";
 
           let moodLabel: string | undefined;
           let moodClass = "feed-mood";
@@ -394,3 +412,4 @@ export default function FeedPage() {
     </div>
   );
 }
+
