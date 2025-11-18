@@ -1,10 +1,11 @@
+// src/app/layout.tsx
 import "./globals.css";
 import Image from "next/image";
 import Link from "next/link";
 import NavBar from "@/components/NavBar";
 import { AuthProvider } from "@/context/AuthContext";
 import LoginToast from "@/components/LoginToast";
-import ProfileIndicator from "@/components/ProfileIndicator";
+import ChatDock from "@/components/ChatDock";
 
 export const metadata = {
   title: "TableSpace",
@@ -20,7 +21,7 @@ export default function RootLayout({
     <html lang="en">
       <body className="min-h-screen">
         <AuthProvider>
-          {/* Header: logo + wordmark + profile indicator */}
+          {/* Header: logo + wordmark */}
           <header className="site-header">
             <Link href="/" className="site-header-logo">
               <Image
@@ -32,25 +33,23 @@ export default function RootLayout({
                 priority
               />
             </Link>
-
             <div className="site-header-wordmark">TABLESPACE</div>
-
-            {/* Logged-in / profile indicator (top area) */}
-            <div style={{ marginLeft: "auto", marginRight: "1rem" }}>
-              <ProfileIndicator />
-            </div>
           </header>
 
           {/* Navigation bar */}
           <NavBar />
 
+          {/* Optional login success toast */}
+          <LoginToast />
+
           {/* Main content area */}
           <main className="site-main">{children}</main>
 
-          {/* One-off login success popup */}
-          <LoginToast />
+          {/* Floating unread-messages widget (bottom-left) */}
+          <ChatDock />
         </AuthProvider>
       </body>
     </html>
   );
 }
+

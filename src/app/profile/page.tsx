@@ -14,6 +14,7 @@ import {
 import {
   addDoc,
   collection,
+  deleteDoc,
   doc,
   onSnapshot,
   orderBy,
@@ -83,7 +84,7 @@ const defaultProfile: ProfileState = {
 };
 
 export default function ProfilePage() {
-  const { user } = useAuthContext();
+  const { user, setActiveProfile } = useAuthContext();
 
   const [profiles, setProfiles] = useState<ProfileDoc[]>([]);
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
@@ -99,6 +100,7 @@ export default function ProfilePage() {
       setErrorMessage("Please sign in to edit your profile.");
       setProfiles([]);
       setActiveProfileId(null);
+      setAvatarPreview(null);
       setLoading(false);
       return;
     }
@@ -140,13 +142,25 @@ export default function ProfilePage() {
         setProfiles(list);
         setLoading(false);
 
-        if (!activeProfileId && list.length > 0) {
-          setActiveProfileId(list[0].id);
-        }
-
         if (list.length === 0) {
           setForm(emptyProfile);
           setAvatarPreview(null);
+          setActiveProfileId(null);
+          setActiveProfile(null);
+          return;
+        }
+
+        // If nothing active yet, pick the first profile
+        if (!activeProfileId) {
+          const first = list[0];
+          setActiveProfileId(first.id);
+          setActiveProfile({
+            id: first.id,
+            uid: first.uid,
+            handle: first.handle,
+            displayName: first.displayName,
+            avatarUrl: first.avatarUrl,
+          });
         }
       },
       (err) => {
@@ -157,12 +171,13 @@ export default function ProfilePage() {
     );
 
     return () => unsub();
-  }, [user, activeProfileId]);
+  }, [user, activeProfileId, setActiveProfile]);
 
-  // Keep form in sync when active profile changes,
-  // and use the stored avatarUrl as the preview.
+  // Keep form in sync when active profile changes
   useEffect(() => {
-    if (!activeProfileId) return;
+    if (!activeProfileId) {
+      return;
+    }
     const current = profiles.find((p) => p.id === activeProfileId);
     if (current) {
       setForm({
@@ -209,19 +224,14 @@ export default function ProfilePage() {
       const path = `avatars/${user.uid}/${Date.now()}-${file.name}`;
       const storageRef = ref(storage, path);
 
-      // Upload to Firebase Storage
       await uploadBytes(storageRef, file);
-
-      // Get public URL
       const downloadUrl = await getDownloadURL(storageRef);
 
-      // Update local state so UI shows new avatar
       setAvatarPreview(downloadUrl);
       setForm((prev) => ({ ...prev, avatarUrl: downloadUrl }));
 
       // Persist avatarUrl to Firestore
       if (activeProfileId) {
-        // Update existing profile
         const refDoc = doc(db, "profiles", activeProfileId);
         await setDoc(
           refDoc,
@@ -233,7 +243,6 @@ export default function ProfilePage() {
           { merge: true }
         );
       } else {
-        // No profile yet: create one on the fly
         const refDoc = await addDoc(collection(db, "profiles"), {
           ...form,
           avatarUrl: downloadUrl,
@@ -242,6 +251,13 @@ export default function ProfilePage() {
           updatedAt: serverTimestamp(),
         });
         setActiveProfileId(refDoc.id);
+        setActiveProfile({
+          id: refDoc.id,
+          uid: user.uid,
+          handle: form.handle,
+          displayName: form.displayName,
+          avatarUrl: downloadUrl,
+        });
       }
     } catch (err) {
       console.error("Error uploading avatar", err);
@@ -258,9 +274,12 @@ export default function ProfilePage() {
       return;
     }
 
-    const normalizedHandle = form.handle.trim().startsWith("@")
-      ? form.handle.trim()
-      : `@${form.handle.trim()}`;
+    const trimmedHandle = form.handle.trim();
+    const normalizedHandle = trimmedHandle
+      ? trimmedHandle.startsWith("@")
+        ? trimmedHandle
+        : `@${trimmedHandle}`
+      : "";
 
     try {
       if (activeProfileId) {
@@ -268,13 +287,22 @@ export default function ProfilePage() {
         await setDoc(
           refDoc,
           {
-            ...form, // includes avatarUrl
+            ...form,
             handle: normalizedHandle,
             uid: user.uid,
             updatedAt: serverTimestamp(),
           },
           { merge: true }
         );
+
+        // Keep AuthContext activeProfile in sync
+        setActiveProfile({
+          id: activeProfileId,
+          uid: user.uid,
+          handle: normalizedHandle,
+          displayName: form.displayName,
+          avatarUrl: form.avatarUrl,
+        });
       } else {
         const refDoc = await addDoc(collection(db, "profiles"), {
           ...form,
@@ -283,7 +311,15 @@ export default function ProfilePage() {
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
+
         setActiveProfileId(refDoc.id);
+        setActiveProfile({
+          id: refDoc.id,
+          uid: user.uid,
+          handle: normalizedHandle,
+          displayName: form.displayName,
+          avatarUrl: form.avatarUrl,
+        });
       }
 
       setSavedMessage("Profile saved!");
@@ -302,7 +338,12 @@ export default function ProfilePage() {
     }
 
     try {
-      const newProfile: ProfileState = { ...emptyProfile };
+      const newProfile: ProfileState = {
+        ...emptyProfile,
+        displayName: "New Profile",
+        handle: "@yourdjname",
+      };
+
       const refDoc = await addDoc(collection(db, "profiles"), {
         ...newProfile,
         uid: user.uid,
@@ -313,14 +354,60 @@ export default function ProfilePage() {
       setActiveProfileId(refDoc.id);
       setForm(newProfile);
       setAvatarPreview(null);
+
+      setActiveProfile({
+        id: refDoc.id,
+        uid: user.uid,
+        handle: newProfile.handle,
+        displayName: newProfile.displayName,
+        avatarUrl: newProfile.avatarUrl,
+      });
     } catch (err) {
       console.error("Error creating profile", err);
       setErrorMessage("Could not create a new profile.");
     }
   }
 
+  async function handleDeleteCurrentProfile() {
+    setErrorMessage(null);
+
+    if (!user) {
+      setErrorMessage("Please sign in to delete a profile.");
+      return;
+    }
+
+    if (!activeProfileId) {
+      setErrorMessage("No active profile to delete.");
+      return;
+    }
+
+    const current = profiles.find((p) => p.id === activeProfileId);
+    const name = current?.displayName || current?.handle || "this profile";
+
+    const confirmDelete = window.confirm(
+      `Are you sure you want to delete ${name}? This cannot be undone.`
+    );
+    if (!confirmDelete) return;
+
+    try {
+      const refDoc = doc(db, "profiles", activeProfileId);
+      await deleteDoc(refDoc);
+
+      // Clear local + global active profile; snapshot will repopulate list
+      setActiveProfileId(null);
+      setActiveProfile(null);
+      setForm(emptyProfile);
+      setAvatarPreview(null);
+      setSavedMessage("Profile deleted.");
+      setTimeout(() => setSavedMessage(null), 2000);
+    } catch (err) {
+      console.error("Error deleting profile", err);
+      setErrorMessage("Could not delete profile. Please try again.");
+    }
+  }
+
   const currentHandleFirstLetter =
-    form.handle.replace("@", "").trim().charAt(0).toUpperCase() || "T";
+    form.handle.replace("@", "").trim().charAt(0).toUpperCase() || "D";
 
   const avatarSrc = avatarPreview || form.avatarUrl || null;
 
@@ -330,7 +417,8 @@ export default function ProfilePage() {
         <h1>Profile</h1>
         <p>
           Set your handle, bio, links and avatar so other turntablists know
-          who&apos;s behind the cuts.
+          who&apos;s behind the cuts. You can keep multiple profiles for
+          different aliases and switch between them.
         </p>
       </div>
 
@@ -348,7 +436,16 @@ export default function ProfilePage() {
           <button
             key={p.id}
             type="button"
-            onClick={() => setActiveProfileId(p.id)}
+            onClick={() => {
+              setActiveProfileId(p.id);
+              setActiveProfile({
+                id: p.id,
+                uid: p.uid,
+                handle: p.handle,
+                displayName: p.displayName,
+                avatarUrl: p.avatarUrl,
+              });
+            }}
             style={{
               borderRadius: 999,
               border: "1px solid #000",
@@ -582,12 +679,35 @@ export default function ProfilePage() {
             </section>
           </div>
 
-          <div className="feed-submit-row" style={{ marginTop: "1rem" }}>
+          <div
+            className="feed-submit-row"
+            style={{ marginTop: "1rem", gap: "0.75rem" }}
+          >
             <button type="submit" className="feed-submit">
               Save profile
             </button>
             {savedMessage && (
               <span className="profile-saved-msg">{savedMessage}</span>
+            )}
+
+            {activeProfileId && profiles.length > 0 && (
+              <button
+                type="button"
+                onClick={handleDeleteCurrentProfile}
+                style={{
+                  marginLeft: "auto",
+                  borderRadius: 999,
+                  border: "1px solid #b91c1c",
+                  padding: "0.25rem 0.9rem",
+                  fontSize: "0.8rem",
+                  fontWeight: 600,
+                  background: "#fee2e2",
+                  color: "#b91c1c",
+                  cursor: "pointer",
+                }}
+              >
+                Delete this profile
+              </button>
             )}
           </div>
         </form>
@@ -595,6 +715,7 @@ export default function ProfilePage() {
     </div>
   );
 }
+
 
 
 

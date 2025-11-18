@@ -1,19 +1,21 @@
 "use client";
 
-import { FormEvent, useEffect, useState, Suspense } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import {
   collection,
   addDoc,
   onSnapshot,
-  orderBy,
   query,
   serverTimestamp,
   where,
   doc,
   updateDoc,
+  orderBy,
+  Timestamp,
+  arrayUnion,
 } from "firebase/firestore";
-import { db } from "../../lib/firebase";
-import { useAuthContext } from "../../context/AuthContext";
+import { db } from "@/lib/firebase";
+import { useAuthContext } from "@/context/AuthContext";
 import { useSearchParams } from "next/navigation";
 
 type Thread = {
@@ -32,7 +34,7 @@ type ChatMessage = {
   mine: boolean;
 };
 
-function MessagesPageInner() {
+export default function MessagesPage() {
   const { user, activeProfile } = useAuthContext();
   const searchParams = useSearchParams();
 
@@ -63,50 +65,70 @@ function MessagesPageInner() {
 
     setLoadingThreads(true);
 
-    const q = query(
-      collection(db, "threads"),
-      where("participants", "array-contains", activeProfile.handle),
-      orderBy("lastMessageAt", "desc")
-    );
+    try {
+      const threadsRef = collection(db, "threads");
+      // NOTE: no orderBy here to avoid composite index requirement.
+      const q = query(
+        threadsRef,
+        where("participants", "array-contains", activeProfile.handle)
+      );
 
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const list: Thread[] = snap.docs.map((d) => {
-          const data = d.data() as any;
-          const others: string[] = (data.participants || []).filter(
-            (h: string) => h !== activeProfile.handle
-          );
-          const otherHandle = others[0] || "Unknown DJ";
+      const unsub = onSnapshot(
+        q,
+        (snap) => {
+          const list: Thread[] = snap.docs
+            .map((d) => {
+              const data = d.data() as any;
+              const others: string[] = (data.participants || []).filter(
+                (h: string) => h !== activeProfile.handle
+              );
+              const otherHandle = others[0] || "Unknown DJ";
 
-          return {
-            id: d.id,
-            otherHandle,
-            lastMessagePreview: data.lastMessagePreview ?? "",
-            lastMessageAt: data.lastMessageAt
-              ? (data.lastMessageAt.toDate() as Date)
-              : null,
-            unread: Boolean(
-              data.lastMessageFrom &&
+              const lastAt: Date | null =
+                data.lastMessageAt instanceof Timestamp
+                  ? data.lastMessageAt.toDate()
+                  : data.lastMessageAt?.toDate
+                  ? data.lastMessageAt.toDate()
+                  : null;
+
+              const unread =
+                Boolean(data.lastMessageFrom) &&
                 data.lastMessageFrom !== activeProfile.handle &&
-                !data.lastMessageReadBy?.includes(activeProfile.handle)
-            ),
-          };
-        });
+                !(data.lastMessageReadBy || []).includes(activeProfile.handle);
 
-        setThreads(list);
-        setLoadingThreads(false);
+              return {
+                id: d.id,
+                otherHandle,
+                lastMessagePreview: data.lastMessagePreview ?? "",
+                lastMessageAt: lastAt,
+                unread,
+              };
+            })
+            // sort newest first on the client
+            .sort((a, b) => {
+              const aTime = a.lastMessageAt?.getTime() ?? 0;
+              const bTime = b.lastMessageAt?.getTime() ?? 0;
+              return bTime - aTime;
+            });
 
-        if (!activeThreadId && list.length > 0) {
-          setActiveThreadId(list[0].id);
+          setThreads(list);
+          setLoadingThreads(false);
+
+          if (!activeThreadId && list.length > 0) {
+            setActiveThreadId(list[0].id);
+          }
+        },
+        (err) => {
+          console.error("Error loading threads", err);
+          setLoadingThreads(false);
         }
-      },
-      () => {
-        setLoadingThreads(false);
-      }
-    );
+      );
 
-    return () => unsub();
+      return () => unsub();
+    } catch (err) {
+      console.error("Error setting up threads listener", err);
+      setLoadingThreads(false);
+    }
   }, [user, activeProfile, activeThreadId]);
 
   // -------------------- Load messages for active thread --------------------
@@ -118,32 +140,57 @@ function MessagesPageInner() {
 
     setLoadingMessages(true);
 
-    const msgsRef = collection(db, "threads", activeThreadId, "messages");
-    const q = query(msgsRef, orderBy("createdAt", "asc"));
+    try {
+      const msgsRef = collection(db, "threads", activeThreadId, "messages");
+      const q = query(msgsRef, orderBy("createdAt", "asc"));
 
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const list: ChatMessage[] = snap.docs.map((d) => {
-          const data = d.data() as any;
-          return {
-            id: d.id,
-            fromHandle: data.fromHandle,
-            text: data.text,
-            createdAt: data.createdAt
-              ? (data.createdAt.toDate() as Date)
-              : null,
-            mine: data.fromHandle === activeProfile.handle,
-          };
-        });
+      const unsub = onSnapshot(
+        q,
+        (snap) => {
+          const list: ChatMessage[] = snap.docs.map((d) => {
+            const data = d.data() as any;
+            const created: Date | null =
+              data.createdAt instanceof Timestamp
+                ? data.createdAt.toDate()
+                : data.createdAt?.toDate
+                ? data.createdAt.toDate()
+                : null;
 
-        setMessages(list);
-        setLoadingMessages(false);
-      },
-      () => setLoadingMessages(false)
-    );
+            return {
+              id: d.id,
+              fromHandle: data.fromHandle,
+              text: data.text,
+              createdAt: created,
+              mine: data.fromHandle === activeProfile.handle,
+            };
+          });
 
-    return () => unsub();
+          setMessages(list);
+          setLoadingMessages(false);
+        },
+        (err) => {
+          console.error("Error loading messages", err);
+          setLoadingMessages(false);
+        }
+      );
+
+      return () => unsub();
+    } catch (err) {
+      console.error("Error setting up messages listener", err);
+      setLoadingMessages(false);
+    }
+  }, [user, activeProfile, activeThreadId]);
+
+  // -------------------- Mark active thread as read --------------------
+  useEffect(() => {
+    if (!user || !activeProfile || !activeThreadId) return;
+
+    const threadRef = doc(db, "threads", activeThreadId);
+    updateDoc(threadRef, {
+      lastMessageReadBy: arrayUnion(activeProfile.handle),
+    }).catch((err) => {
+      console.error("Error marking thread as read", err);
+    });
   }, [user, activeProfile, activeThreadId]);
 
   // -------------------- Prefill text from Buy/Sell link --------------------
@@ -206,7 +253,6 @@ function MessagesPageInner() {
     }
 
     if (!threadId) {
-      // No active thread and no seller – nothing to send to
       return;
     }
 
@@ -431,14 +477,6 @@ function MessagesPageInner() {
   );
 }
 
-// This is the part that satisfies Next.js: wrap the searchParams user in Suspense
-export default function MessagesPage() {
-  return (
-    <Suspense fallback={<div className="messages-empty">Loading messages…</div>}>
-      <MessagesPageInner />
-    </Suspense>
-  );
-}
 
 
 
