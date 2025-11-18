@@ -97,6 +97,9 @@ export default function BattlesPage() {
   const [creating, setCreating] = useState(false);
   const [battles, setBattles] = useState<Battle[]>([]);
 
+  // NEW: toggle for showing the create form
+  const [showForm, setShowForm] = useState(false);
+
   // Track which sides this browser has voted for in each battle
   const [voteState, setVoteState] = useState<VoteState>(() => {
     if (typeof window === "undefined") return {};
@@ -183,6 +186,8 @@ export default function BattlesPage() {
       });
 
       setForm(initialForm);
+      // NEW: collapse the form after creating
+      setShowForm(false);
     } finally {
       setCreating(false);
     }
@@ -226,112 +231,132 @@ export default function BattlesPage() {
         </p>
       </div>
 
-      {/* CREATE BATTLE */}
-      <section className="feed-form">
-        <h2 className="profile-section-title">Create a battle</h2>
-        {!canCreate && (
-          <p className="auth-subnote">
-            You need to be signed in and have a profile selected to create a
-            battle.
-          </p>
-        )}
+      {/* Centered toggle button for create form */}
+      <div
+        style={{
+          marginBottom: "0.75rem",
+          display: "flex",
+          justifyContent: "center",
+        }}
+      >
+        <button
+          type="button"
+          onClick={() => setShowForm((prev) => !prev)}
+          className="messages-compose-send"
+          style={{ minWidth: "180px", textAlign: "center" }}
+        >
+          {showForm ? "Cancel battle ⌃" : "Create battle ⌄"}
+        </button>
+      </div>
 
-        <form onSubmit={handleCreateBattle} className="space-y-3">
-          <div className="feed-field">
-            <label className="feed-label" htmlFor="title">
-              Battle title
-            </label>
-            <input
-              id="title"
-              name="title"
-              type="text"
-              className="feed-input"
-              placeholder="Crab scratch showdown, 140bpm juggle, etc."
-              value={form.title}
-              onChange={handleChange}
-              disabled={!canCreate}
-            />
-          </div>
+      {/* CREATE BATTLE (collapsible) */}
+      {showForm && (
+        <section className="feed-form">
+          <h2 className="profile-section-title">Create a battle</h2>
+          {!canCreate && (
+            <p className="auth-subnote">
+              You need to be signed in and have a profile selected to create a
+              battle.
+            </p>
+          )}
 
-          <div className="feed-field">
-            <label className="feed-label" htmlFor="conditions">
-              Rules / conditions
-            </label>
-            <textarea
-              id="conditions"
-              name="conditions"
-              className="feed-textarea"
-              rows={2}
-              placeholder="e.g. 16 bars, no FX, DVS allowed, etc."
-              value={form.conditions}
-              onChange={handleChange}
-              disabled={!canCreate}
-            />
-          </div>
-
-          <div className="feed-form-row">
+          <form onSubmit={handleCreateBattle} className="space-y-3">
             <div className="feed-field">
-              <label className="feed-label" htmlFor="opponentHandle">
-                Opponent handle (optional)
+              <label className="feed-label" htmlFor="title">
+                Battle title
               </label>
               <input
-                id="opponentHandle"
-                name="opponentHandle"
+                id="title"
+                name="title"
                 type="text"
                 className="feed-input"
-                placeholder="@otherdj"
-                value={form.opponentHandle}
-                onChange={handleChange}
-                disabled={!canCreate}
-              />
-            </div>
-          </div>
-
-          <div className="feed-form-row">
-            <div className="feed-field">
-              <label className="feed-label" htmlFor="clipAUrl">
-                Your clip (YouTube URL)
-              </label>
-              <input
-                id="clipAUrl"
-                name="clipAUrl"
-                type="url"
-                className="feed-input"
-                placeholder="https://youtube.com/watch?v=..."
-                value={form.clipAUrl}
+                placeholder="Crab scratch showdown, 140bpm juggle, etc."
+                value={form.title}
                 onChange={handleChange}
                 disabled={!canCreate}
               />
             </div>
 
             <div className="feed-field">
-              <label className="feed-label" htmlFor="clipBUrl">
-                Opponent clip (YouTube URL)
+              <label className="feed-label" htmlFor="conditions">
+                Rules / conditions
               </label>
-              <input
-                id="clipBUrl"
-                name="clipBUrl"
-                type="url"
-                className="feed-input"
-                placeholder="https://youtube.com/watch?v=..."
-                value={form.clipBUrl}
+              <textarea
+                id="conditions"
+                name="conditions"
+                className="feed-textarea"
+                rows={2}
+                placeholder="e.g. 16 bars, no FX, DVS allowed, etc."
+                value={form.conditions}
                 onChange={handleChange}
                 disabled={!canCreate}
               />
             </div>
-          </div>
 
-          <div className="feed-submit-row">
-            <button
-              type="submit"
-              className="feed-submit"
-              disabled={!canCreate || creating}
-            >
-              {creating ? "Creating…" : "Create battle"}
-            </button>
-          </div>
-        </form>
-      </section>
+            <div className="feed-form-row">
+              <div className="feed-field">
+                <label className="feed-label" htmlFor="opponentHandle">
+                  Opponent handle (optional)
+                </label>
+                <input
+                  id="opponentHandle"
+                  name="opponentHandle"
+                  type="text"
+                  className="feed-input"
+                  placeholder="@otherdj"
+                  value={form.opponentHandle}
+                  onChange={handleChange}
+                  disabled={!canCreate}
+                />
+              </div>
+            </div>
+
+            <div className="feed-form-row">
+              <div className="feed-field">
+                <label className="feed-label" htmlFor="clipAUrl">
+                  Your clip (YouTube URL)
+                </label>
+                <input
+                  id="clipAUrl"
+                  name="clipAUrl"
+                  type="url"
+                  className="feed-input"
+                  placeholder="https://youtube.com/watch?v=..."
+                  value={form.clipAUrl}
+                  onChange={handleChange}
+                  disabled={!canCreate}
+                />
+              </div>
+
+              <div className="feed-field">
+                <label className="feed-label" htmlFor="clipBUrl">
+                  Opponent clip (YouTube URL)
+                </label>
+                <input
+                  id="clipBUrl"
+                  name="clipBUrl"
+                  type="url"
+                  className="feed-input"
+                  placeholder="https://youtube.com/watch?v=..."
+                  value={form.clipBUrl}
+                  onChange={handleChange}
+                  disabled={!canCreate}
+                />
+              </div>
+            </div>
+
+            <div className="feed-submit-row">
+              <button
+                type="submit"
+                className="feed-submit"
+                disabled={!canCreate || creating}
+              >
+                {creating ? "Creating…" : "Create battle"}
+              </button>
+            </div>
+          </form>
+        </section>
+      )}
 
       {/* LIST OF BATTLES */}
       <section className="clips-list">
@@ -426,5 +451,6 @@ export default function BattlesPage() {
     </div>
   );
 }
+
 
 
