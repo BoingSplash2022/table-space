@@ -23,8 +23,8 @@ type BattleDoc = {
   creatorUid: string;
   creatorHandle: string;
   opponentHandle: string;
-  clipAUrl: string; // creator
-  clipBUrl: string; // opponent
+  clipAUrl: string;
+  clipBUrl: string;
   votesA?: number;
   votesB?: number;
 };
@@ -66,41 +66,54 @@ type VoteState = {
   };
 };
 
-// Simple YouTube embed helper
+/* ============================================================
+   UPDATED YouTube ID helper — now supports YouTube Shorts
+   ============================================================ */
 function getYouTubeEmbedId(url: string): string | null {
   try {
     const u = new URL(url);
+
+    // youtu.be short link
     if (u.hostname === "youtu.be") {
       return u.pathname.slice(1);
     }
-    if (
-      u.hostname === "www.youtube.com" ||
-      u.hostname === "youtube.com" ||
-      u.hostname === "m.youtube.com"
-    ) {
+
+    // any YouTube domain
+    if (u.hostname.includes("youtube.com") || u.hostname.includes("m.youtube.com")) {
+      // Standard ?v=xxxx
       const v = u.searchParams.get("v");
       if (v) return v;
+
+      // /embed/xxxx
       if (u.pathname.startsWith("/embed/")) {
         return u.pathname.split("/embed/")[1] ?? null;
       }
+
+      // /shorts/xxxx
+      if (u.pathname.startsWith("/shorts/")) {
+        return u.pathname.split("/shorts/")[1]?.split("?")[0] ?? null;
+      }
     }
+
   } catch {
     return null;
   }
+
   return null;
 }
 
+/* ============================================================
+   Main Component
+   ============================================================ */
 export default function BattlesPage() {
   const { user, activeProfile } = useAuthContext();
 
   const [form, setForm] = useState<BattleFormState>(initialForm);
   const [creating, setCreating] = useState(false);
   const [battles, setBattles] = useState<Battle[]>([]);
-
-  // NEW: toggle for showing the create form
   const [showForm, setShowForm] = useState(false);
 
-  // Track which sides this browser has voted for in each battle
+  // Track votes in localStorage
   const [voteState, setVoteState] = useState<VoteState>(() => {
     if (typeof window === "undefined") return {};
     try {
@@ -111,20 +124,17 @@ export default function BattlesPage() {
     }
   });
 
-  // Persist voteState to localStorage so it survives refresh
+  // Persist votes
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
       window.localStorage.setItem("battleVotes", JSON.stringify(voteState));
-    } catch {
-      // ignore storage errors
-    }
+    } catch {}
   }, [voteState]);
 
-  // Load battles (newest first)
+  // Load battles
   useEffect(() => {
     const q = query(collection(db, "battles"), orderBy("createdAt", "desc"));
-
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const items: Battle[] = snapshot.docs.map((docSnap) => {
         const data = docSnap.data() as BattleDoc;
@@ -148,10 +158,9 @@ export default function BattlesPage() {
     return () => unsubscribe();
   }, []);
 
-  // ----- form handlers -----
-  function handleChange(
-    e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
-  ) {
+  /* ---------------------- form handlers ---------------------- */
+
+  function handleChange(e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) {
     const { name, value } = e.target;
     setForm((prev) => ({ ...prev, [name]: value }));
   }
@@ -160,33 +169,31 @@ export default function BattlesPage() {
     e.preventDefault();
     if (!user || !activeProfile) return;
 
-    const trimmedTitle = form.title.trim();
-    const trimmedConditions = form.conditions.trim();
-    const trimmedOpponent = form.opponentHandle.trim();
-    const trimmedClipA = form.clipAUrl.trim();
-    const trimmedClipB = form.clipBUrl.trim();
+    const trimmed = {
+      title: form.title.trim(),
+      conditions: form.conditions.trim(),
+      opponent: form.opponentHandle.trim(),
+      a: form.clipAUrl.trim(),
+      b: form.clipBUrl.trim(),
+    };
 
-    if (!trimmedTitle || !trimmedClipA || !trimmedClipB) {
-      return;
-    }
+    if (!trimmed.title || !trimmed.a || !trimmed.b) return;
 
     setCreating(true);
     try {
       await addDoc(collection(db, "battles"), {
-        title: trimmedTitle,
-        conditions: trimmedConditions,
+        title: trimmed.title,
+        conditions: trimmed.conditions,
         creatorUid: user.uid,
         creatorHandle: activeProfile.handle,
-        opponentHandle: trimmedOpponent || "Opponent",
-        clipAUrl: trimmedClipA,
-        clipBUrl: trimmedClipB,
+        opponentHandle: trimmed.opponent || "Opponent",
+        clipAUrl: trimmed.a,
+        clipBUrl: trimmed.b,
         votesA: 0,
         votesB: 0,
         createdAt: serverTimestamp(),
       });
-
       setForm(initialForm);
-      // NEW: collapse the form after creating
       setShowForm(false);
     } finally {
       setCreating(false);
@@ -194,44 +201,43 @@ export default function BattlesPage() {
   }
 
   async function handleVote(battleId: string, side: "A" | "B") {
-    if (!user) return; // require login to vote (optional)
+    if (!user) return;
 
-    const alreadyForBattle = voteState[battleId] ?? { a: false, b: false };
+    const already = voteState[battleId] ?? { a: false, b: false };
+    if (side === "A" && already.a) return;
+    if (side === "B" && already.b) return;
 
-    // stop multiple votes for the same side in this battle
-    if (side === "A" && alreadyForBattle.a) return;
-    if (side === "B" && alreadyForBattle.b) return;
-
-    const battleRef = doc(db, "battles", battleId);
+    const ref = doc(db, "battles", battleId);
 
     if (side === "A") {
-      await updateDoc(battleRef, { votesA: increment(1) });
+      await updateDoc(ref, { votesA: increment(1) });
       setVoteState((prev) => ({
         ...prev,
-        [battleId]: { ...alreadyForBattle, a: true },
+        [battleId]: { ...already, a: true },
       }));
     } else {
-      await updateDoc(battleRef, { votesB: increment(1) });
+      await updateDoc(ref, { votesB: increment(1) });
       setVoteState((prev) => ({
         ...prev,
-        [battleId]: { ...alreadyForBattle, b: true },
+        [battleId]: { ...already, b: true },
       }));
     }
   }
 
   const canCreate = Boolean(user && activeProfile);
 
+  /* ============================================================
+     Render
+     ============================================================ */
+
   return (
     <div className="feed">
       <div className="feed-header">
         <h1>Battles</h1>
-        <p>
-          Set up scratch showdowns, share clips, and let the community vote on
-          the winner.
-        </p>
+        <p>Set up scratch showdowns, share clips, and let the community vote.</p>
       </div>
 
-      {/* Centered toggle button for create form */}
+      {/* Toggle create form */}
       <div
         style={{
           marginBottom: "0.75rem",
@@ -241,7 +247,7 @@ export default function BattlesPage() {
       >
         <button
           type="button"
-          onClick={() => setShowForm((prev) => !prev)}
+          onClick={() => setShowForm((p) => !p)}
           className="messages-compose-send"
           style={{ minWidth: "180px", textAlign: "center" }}
         >
@@ -249,20 +255,19 @@ export default function BattlesPage() {
         </button>
       </div>
 
-      {/* CREATE BATTLE (collapsible) */}
+      {/* CREATE FORM */}
       {showForm && (
         <section className="feed-form">
           <h2 className="profile-section-title">Create a battle</h2>
           {!canCreate && (
             <p className="auth-subnote">
-              You need to be signed in and have a profile selected to create a
-              battle.
+              You need to be signed in and have a profile selected.
             </p>
           )}
 
           <form onSubmit={handleCreateBattle} className="space-y-3">
             <div className="feed-field">
-              <label className="feed-label" htmlFor="title">
+              <label htmlFor="title" className="feed-label">
                 Battle title
               </label>
               <input
@@ -270,7 +275,6 @@ export default function BattlesPage() {
                 name="title"
                 type="text"
                 className="feed-input"
-                placeholder="Crab scratch showdown, 140bpm juggle, etc."
                 value={form.title}
                 onChange={handleChange}
                 disabled={!canCreate}
@@ -286,29 +290,25 @@ export default function BattlesPage() {
                 name="conditions"
                 className="feed-textarea"
                 rows={2}
-                placeholder="e.g. 16 bars, no FX, DVS allowed, etc."
                 value={form.conditions}
                 onChange={handleChange}
                 disabled={!canCreate}
               />
             </div>
 
-            <div className="feed-form-row">
-              <div className="feed-field">
-                <label className="feed-label" htmlFor="opponentHandle">
-                  Opponent handle (optional)
-                </label>
-                <input
-                  id="opponentHandle"
-                  name="opponentHandle"
-                  type="text"
-                  className="feed-input"
-                  placeholder="@otherdj"
-                  value={form.opponentHandle}
-                  onChange={handleChange}
-                  disabled={!canCreate}
-                />
-              </div>
+            <div className="feed-field">
+              <label className="feed-label" htmlFor="opponentHandle">
+                Opponent handle (optional)
+              </label>
+              <input
+                id="opponentHandle"
+                name="opponentHandle"
+                type="text"
+                className="feed-input"
+                value={form.opponentHandle}
+                onChange={handleChange}
+                disabled={!canCreate}
+              />
             </div>
 
             <div className="feed-form-row">
@@ -321,7 +321,6 @@ export default function BattlesPage() {
                   name="clipAUrl"
                   type="url"
                   className="feed-input"
-                  placeholder="https://youtube.com/watch?v=..."
                   value={form.clipAUrl}
                   onChange={handleChange}
                   disabled={!canCreate}
@@ -337,7 +336,6 @@ export default function BattlesPage() {
                   name="clipBUrl"
                   type="url"
                   className="feed-input"
-                  placeholder="https://youtube.com/watch?v=..."
                   value={form.clipBUrl}
                   onChange={handleChange}
                   disabled={!canCreate}
@@ -358,7 +356,7 @@ export default function BattlesPage() {
         </section>
       )}
 
-      {/* LIST OF BATTLES */}
+      {/* BATTLE LIST */}
       <section className="clips-list">
         {battles.map((battle) => {
           const embedAId = getYouTubeEmbedId(battle.clipAUrl);
@@ -390,6 +388,7 @@ export default function BattlesPage() {
                       {battle.votesA} vote{battle.votesA === 1 ? "" : "s"}
                     </span>
                   </div>
+
                   {embedAId && (
                     <iframe
                       className="embed-frame youtube"
@@ -399,6 +398,7 @@ export default function BattlesPage() {
                       allowFullScreen
                     />
                   )}
+
                   <button
                     type="button"
                     className="battle-vote-btn"
@@ -417,6 +417,7 @@ export default function BattlesPage() {
                       {battle.votesB} vote{battle.votesB === 1 ? "" : "s"}
                     </span>
                   </div>
+
                   {embedBId && (
                     <iframe
                       className="embed-frame youtube"
@@ -426,6 +427,7 @@ export default function BattlesPage() {
                       allowFullScreen
                     />
                   )}
+
                   <button
                     type="button"
                     className="battle-vote-btn"
