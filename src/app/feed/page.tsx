@@ -17,7 +17,7 @@ import { db } from "../../lib/firebase";
 import { useAuthContext } from "../../context/AuthContext";
 
 /* -------------------------------------------------
-   Like Button Component (animated)
+   Persistent Like Button (Feed)
 -------------------------------------------------- */
 
 function LikeButton({ postId, likes = 0 }: { postId: string; likes: number }) {
@@ -25,11 +25,22 @@ function LikeButton({ postId, likes = 0 }: { postId: string; likes: number }) {
   const [count, setCount] = useState(likes);
   const [liked, setLiked] = useState(false);
 
+  // Load like state from localStorage (prevents double-like)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const stored = localStorage.getItem(`liked-feed-${postId}`);
+    if (stored === "true") setLiked(true);
+  }, [postId]);
+
   const handleLike = async () => {
     if (!user || liked) return;
 
+    // instant UI response
     setLiked(true);
     setCount((prev) => prev + 1);
+
+    // persist local like state
+    localStorage.setItem(`liked-feed-${postId}`, "true");
 
     try {
       const ref = doc(db, "feedPosts", postId);
@@ -109,23 +120,28 @@ function timeSince(date: Date): string {
 }
 
 /* -------------------------------------------------
-   EMBED HELPERS
+   EMBEDS
 -------------------------------------------------- */
 
 function getYoutubeEmbedUrl(url: string): string | null {
   try {
     const u = new URL(url);
+
     if (u.hostname.includes("youtu.be"))
       return `https://www.youtube.com/embed/${u.pathname.slice(1)}`;
+
     if (u.hostname.includes("youtube.com")) {
       const v = u.searchParams.get("v");
       if (v) return `https://www.youtube.com/embed/${v}`;
+
       if (u.pathname.startsWith("/embed/")) return url;
+
       if (u.pathname.startsWith("/shorts/")) {
         const id = u.pathname.split("/shorts/")[1];
         return `https://www.youtube.com/embed/${id}`;
       }
     }
+
     return null;
   } catch {
     return null;
@@ -137,12 +153,7 @@ function YoutubeEmbed({ url }: { url: string }) {
   if (!embedUrl) return null;
   return (
     <div className="feed-embed">
-      <iframe
-        className="embed-frame youtube"
-        src={embedUrl}
-        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-        allowFullScreen
-      />
+      <iframe className="embed-frame youtube" src={embedUrl} allowFullScreen />
     </div>
   );
 }
@@ -153,9 +164,7 @@ function SoundcloudEmbed({ url }: { url: string }) {
     <div className="feed-embed">
       <iframe
         className="embed-frame soundcloud"
-        src={`https://w.soundcloud.com/player/?url=${encodeURIComponent(
-          url
-        )}`}
+        src={`https://w.soundcloud.com/player/?url=${encodeURIComponent(url)}`}
       />
     </div>
   );
@@ -190,6 +199,7 @@ export default function FeedPage() {
     const unsub = onSnapshot(q, (snap) => {
       const rows: FeedPost[] = snap.docs.map((d) => {
         const data = d.data() as FeedPostFromDb;
+
         return {
           id: d.id,
           handle: data.handle ?? "@yourdjname",
@@ -202,12 +212,14 @@ export default function FeedPage() {
           likes: data.likes ?? 0,
         };
       });
+
       setPosts(rows);
     });
+
     return () => unsub();
   }, []);
 
-  /* Submit post */
+  /* Submit new post */
   async function handlePost(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const form = e.currentTarget;
@@ -283,15 +295,11 @@ export default function FeedPage() {
 
             <div className="feed-field">
               <label>Post</label>
-              <textarea
-                name="text"
-                className="feed-textarea"
-                required
-              />
+              <textarea name="text" className="feed-textarea" required />
             </div>
 
             <div className="feed-field">
-              <label>YouTube link (optional)</label>
+              <label>YouTube link</label>
               <input name="youtubeUrl" type="url" className="feed-input" />
             </div>
 
@@ -306,7 +314,9 @@ export default function FeedPage() {
               </div>
             </div>
 
-            <button type="submit" className="feed-submit">Drop post</button>
+            <button type="submit" className="feed-submit">
+              Drop post
+            </button>
           </form>
         </section>
       )}
@@ -333,7 +343,7 @@ export default function FeedPage() {
                 {post.soundcloudUrl && <SoundcloudEmbed url={post.soundcloudUrl} />}
                 {post.mixcloudUrl && <MixcloudEmbed url={post.mixcloudUrl} />}
 
-                {/* LIKE BUTTON HERE */}
+                {/* LIKE BUTTON */}
                 <LikeButton postId={post.id} likes={post.likes} />
               </div>
             </article>

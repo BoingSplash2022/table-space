@@ -2,7 +2,6 @@
 
 "use client";
 
-
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
 import {
   addDoc,
@@ -14,12 +13,16 @@ import {
   Timestamp,
   updateDoc,
   doc,
+  increment,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuthContext } from "@/context/AuthContext";
 
-// --- Like Button Component ---
-function LikeButton({ clipId, likes }: { clipId: string; likes: number }) {
+/* -------------------------------------------------
+   Animated Like Button (consistent with Feed)
+-------------------------------------------------- */
+
+function LikeButton({ clipId, likes = 0 }: { clipId: string; likes: number }) {
   const { user } = useAuthContext();
   const [count, setCount] = useState(likes);
   const [liked, setLiked] = useState(false);
@@ -31,10 +34,8 @@ function LikeButton({ clipId, likes }: { clipId: string; likes: number }) {
     setCount((prev) => prev + 1);
 
     try {
-      const clipRef = doc(db, "clips", clipId);
-      await updateDoc(clipRef, {
-        likes: likes + 1,
-      });
+      const ref = doc(db, "clips", clipId);
+      await updateDoc(ref, { likes: increment(1) });
     } catch (err) {
       console.error("Error liking clip", err);
     }
@@ -46,30 +47,29 @@ function LikeButton({ clipId, likes }: { clipId: string; likes: number }) {
       disabled={!user || liked}
       className="
         flex items-center gap-2 ml-auto mt-2
-        text-gray-700 hover:text-black 
+        text-gray-700 hover:text-black
         transition-colors duration-150
       "
     >
       <span
         style={{ fontSize: "1.3rem" }}
         className={`
-          inline-block
-          transition-transform duration-200
+          inline-block transition-transform duration-200
           ${liked ? "scale-125" : "scale-100"}
         `}
       >
         {liked ? "❤️‍🔥" : "🖤"}
       </span>
 
-      <span className="transition-transform duration-200">
-        Fuckin' Love It! ({count})
-      </span>
+      <span>Fuckin' Love It! ({count})</span>
     </button>
   );
 }
 
+/* -------------------------------------------------
+   Types
+-------------------------------------------------- */
 
-// --- Types ---
 type ClipPlatform = "youtube" | "soundcloud" | "mixcloud" | "other";
 
 type ClipDocFromDb = {
@@ -94,7 +94,10 @@ type Clip = {
   likes: number;
 };
 
-// --- Time utility ---
+/* -------------------------------------------------
+   Time util
+-------------------------------------------------- */
+
 function timeSince(date: Date | null): string {
   if (!date) return "";
   const diffMs = Date.now() - date.getTime();
@@ -108,14 +111,16 @@ function timeSince(date: Date | null): string {
   return `${days} day${days === 1 ? "" : "s"} ago`;
 }
 
-// --- YouTube Embed Helper with Shorts Support ---
+/* -------------------------------------------------
+   YouTube Embed Helper (with Shorts support)
+-------------------------------------------------- */
+
 function getYoutubeEmbedUrl(url: string): string | null {
   try {
     const u = new URL(url);
 
     if (u.hostname.includes("youtu.be")) {
       const id = u.pathname.replace("/", "");
-      if (!id) return null;
       return `https://www.youtube.com/embed/${id}`;
     }
 
@@ -127,14 +132,13 @@ function getYoutubeEmbedUrl(url: string): string | null {
 
       if (u.pathname.startsWith("/shorts/")) {
         const id = u.pathname.split("/shorts/")[1]?.split("?")[0];
-        if (id) return `https://www.youtube.com/embed/${id}`;
+        return id ? `https://www.youtube.com/embed/${id}` : null;
       }
     }
-
-    return null;
   } catch {
     return null;
   }
+  return null;
 }
 
 function YoutubeEmbed({ url }: { url: string }) {
@@ -161,12 +165,7 @@ function SoundcloudEmbed({ url }: { url: string }) {
   )}&color=%23000000&auto_play=false&hide_related=false&show_comments=true&show_user=true&show_reposts=false&show_teaser=true`;
   return (
     <div className="feed-embed">
-      <iframe
-        className="embed-frame soundcloud"
-        src={playerUrl}
-        allow="autoplay"
-        loading="lazy"
-      />
+      <iframe className="embed-frame soundcloud" src={playerUrl} />
     </div>
   );
 }
@@ -178,12 +177,15 @@ function MixcloudEmbed({ url }: { url: string }) {
   )}`;
   return (
     <div className="feed-embed">
-      <iframe className="embed-frame mixcloud" src={widgetUrl} loading="lazy" />
+      <iframe className="embed-frame mixcloud" src={widgetUrl} />
     </div>
   );
 }
 
-// --- Main Page ---
+/* -------------------------------------------------
+   Main Page
+-------------------------------------------------- */
+
 export default function ClipsPage() {
   const { user, activeProfile } = useAuthContext();
 
@@ -197,12 +199,12 @@ export default function ClipsPage() {
   const [submitting, setSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  /* Prefill handle */
   useEffect(() => {
-    if (activeProfile?.handle) {
-      setHandle((prev) => prev || activeProfile.handle);
-    }
+    if (activeProfile?.handle) setHandle(activeProfile.handle);
   }, [activeProfile]);
 
+  /* Load clips from Firestore */
   useEffect(() => {
     const ref = collection(db, "clips");
     const q = query(ref, orderBy("createdAt", "desc"));
@@ -227,6 +229,7 @@ export default function ClipsPage() {
     return () => unsub();
   }, []);
 
+  /* Submit new clip */
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setErrorMessage(null);
@@ -255,7 +258,7 @@ export default function ClipsPage() {
         title: trimmedTitle,
         url: trimmedUrl,
         platform,
-        description: description.trim() || "",
+        description: description.trim(),
         createdAt: serverTimestamp(),
         uid: user.uid,
         likes: 0,
@@ -273,12 +276,7 @@ export default function ClipsPage() {
       setErrorMessage("Could not post clip. Please try again.");
     } finally {
       setSubmitting(false);
-
     }
-  }
-
-  function onHandleChange(e: ChangeEvent<HTMLInputElement>) {
-    setHandle(e.target.value);
   }
 
   return (
@@ -288,51 +286,36 @@ export default function ClipsPage() {
         <p>Share scratch clips, routines and practice sessions.</p>
       </div>
 
-      {/* Centered toggle button */}
-      <div
-        style={{
-          marginBottom: "0.75rem",
-          display: "flex",
-          justifyContent: "center",
-        }}
-      >
+      {/* Toggle button */}
+      <div className="flex justify-center mb-3">
         <button
           type="button"
-          onClick={() => setShowForm((prev) => !prev)}
+          onClick={() => setShowForm((p) => !p)}
           className="messages-compose-send"
-          style={{ minWidth: "180px", textAlign: "center" }}
+          style={{ minWidth: 180 }}
         >
           {showForm ? "Cancel clip ⌃" : "Add new clip ⌄"}
         </button>
       </div>
 
-      {/* Composer (collapsible) */}
+      {/* Composer */}
       {showForm && (
         <section className="feed-form">
           <form onSubmit={handleSubmit} className="feed-form-inner">
             <div className="feed-form-row">
               <div className="feed-field">
-                <label className="feed-label" htmlFor="handle">
-                  Handle
-                </label>
+                <label className="feed-label">Handle</label>
                 <input
-                  id="handle"
-                  name="handle"
                   type="text"
                   className="feed-input"
-                  placeholder="@yourdjname"
                   value={handle}
-                  onChange={onHandleChange}
+                  onChange={(e) => setHandle(e.target.value)}
                 />
               </div>
 
               <div className="feed-field" style={{ maxWidth: 200 }}>
-                <label className="feed-label" htmlFor="platform">
-                  Platform
-                </label>
+                <label className="feed-label">Platform</label>
                 <select
-                  id="platform"
-                  name="platform"
                   className="feed-select"
                   value={platform}
                   onChange={(e) =>
@@ -348,76 +331,51 @@ export default function ClipsPage() {
             </div>
 
             <div className="feed-field">
-              <label className="feed-label" htmlFor="title">
-                Clip title
-              </label>
+              <label className="feed-label">Clip title</label>
               <input
-                id="title"
-                name="title"
                 type="text"
                 className="feed-input"
-                placeholder="Routine name / practice theme"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
               />
             </div>
 
             <div className="feed-field">
-              <label className="feed-label" htmlFor="url">
-                Clip link
-              </label>
+              <label className="feed-label">Clip link</label>
               <input
-                id="url"
-                name="url"
                 type="url"
                 className="feed-input"
-                placeholder="Paste YouTube / SoundCloud / Mixcloud / other link"
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
               />
             </div>
 
             <div className="feed-field">
-              <label className="feed-label" htmlFor="description">
-                Description (optional)
-              </label>
+              <label className="feed-label">Description (optional)</label>
               <textarea
-                id="description"
-                name="description"
                 className="feed-textarea"
-                rows={3}
-                placeholder="Setup, gear, tempo, routine notes, etc."
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
+                rows={3}
               />
             </div>
 
             {errorMessage && (
-              <p className="auth-error" style={{ marginTop: "0.5rem" }}>
-                {errorMessage}
-              </p>
+              <p className="auth-error">{errorMessage}</p>
             )}
 
-            <div className="feed-submit-row" style={{ marginTop: "0.75rem" }}>
-              <button
-                type="submit"
-                className="feed-submit"
-                disabled={submitting}
-              >
-                {submitting ? "Posting…" : "Post clip"}
-              </button>
-            </div>
+            <button type="submit" className="feed-submit" disabled={submitting}>
+              {submitting ? "Posting…" : "Post clip"}
+            </button>
           </form>
         </section>
       )}
 
-      {/* Clips list */}
+      {/* Clips List */}
       <section className="feed-list">
         {clips.map((clip) => {
           const initial =
-            clip.handle.replace("@", "").trim().charAt(0).toUpperCase() || "D";
-
-          const timeLabel = timeSince(clip.createdAt);
+            clip.handle.replace("@", "").charAt(0).toUpperCase() || "D";
 
           return (
             <article key={clip.id} className="feed-post">
@@ -426,49 +384,44 @@ export default function ClipsPage() {
               <div className="feed-post-body">
                 <div className="feed-post-header">
                   <span className="feed-handle">{clip.handle}</span>
-                  {timeLabel && (
-                    <span className="feed-time">{timeLabel}</span>
-                  )}
+                  <span className="feed-time">
+                    {timeSince(clip.createdAt)}
+                  </span>
                   <span className="feed-mood clip">Clip</span>
                 </div>
 
                 {clip.title && (
-                  <h3
-                    style={{
-                      fontSize: "0.95rem",
-                      fontWeight: 600,
-                      marginBottom: "0.25rem",
-                    }}
-                  >
-                    {clip.title}
-                  </h3>
+                  <h3 className="font-semibold mb-1">{clip.title}</h3>
                 )}
 
                 {clip.description && (
-                  <p className="feed-text" style={{ marginBottom: "0.35rem" }}>
-                    {clip.description}
-                  </p>
+                  <p className="feed-text mb-2">{clip.description}</p>
                 )}
 
-                {clip.platform === "youtube" && <YoutubeEmbed url={clip.url} />}
+                {clip.platform === "youtube" && (
+                  <YoutubeEmbed url={clip.url} />
+                )}
+
                 {clip.platform === "soundcloud" && (
                   <SoundcloudEmbed url={clip.url} />
                 )}
+
                 {clip.platform === "mixcloud" && (
                   <MixcloudEmbed url={clip.url} />
                 )}
+
                 {clip.platform === "other" && (
                   <a
                     href={clip.url}
                     target="_blank"
-                    rel="noopener noreferrer"
                     className="buy-link"
+                    rel="noopener noreferrer"
                   >
                     Open clip
                   </a>
                 )}
 
-                {/* ❤️ Like Button */}
+                {/* Like Button */}
                 <div className="flex justify-end">
                   <LikeButton clipId={clip.id} likes={clip.likes} />
                 </div>
@@ -478,9 +431,7 @@ export default function ClipsPage() {
         })}
 
         {clips.length === 0 && (
-          <p style={{ marginTop: "1rem", fontSize: "0.9rem" }}>
-            No clips yet. Add one with the button above.
-          </p>
+          <p className="text-sm mt-4">No clips yet. Add one above.</p>
         )}
       </section>
     </div>
