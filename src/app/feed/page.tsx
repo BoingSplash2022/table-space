@@ -25,7 +25,6 @@ function LikeButton({ postId, likes = 0 }: { postId: string; likes: number }) {
   const [count, setCount] = useState(likes);
   const [liked, setLiked] = useState(false);
 
-  // Load like state from localStorage (prevents double-like)
   useEffect(() => {
     if (typeof window === "undefined") return;
     const stored = localStorage.getItem(`liked-feed-${postId}`);
@@ -35,11 +34,8 @@ function LikeButton({ postId, likes = 0 }: { postId: string; likes: number }) {
   const handleLike = async () => {
     if (!user || liked) return;
 
-    // instant UI response
     setLiked(true);
     setCount((prev) => prev + 1);
-
-    // persist local like state
     localStorage.setItem(`liked-feed-${postId}`, "true");
 
     try {
@@ -89,6 +85,7 @@ type FeedPost = {
   youtubeUrl?: string;
   soundcloudUrl?: string;
   mixcloudUrl?: string;
+  instagramUrl?: string;
   likes: number;
 };
 
@@ -100,6 +97,7 @@ type FeedPostFromDb = {
   youtubeUrl?: string | null;
   soundcloudUrl?: string | null;
   mixcloudUrl?: string | null;
+  instagramUrl?: string | null;
   likes?: number;
 };
 
@@ -120,9 +118,39 @@ function timeSince(date: Date): string {
 }
 
 /* -------------------------------------------------
-   EMBEDS
+   EMBED HELPERS
 -------------------------------------------------- */
 
+// Instagram official embed
+function InstagramEmbed({ url }: { url: string }) {
+  // Normalise permalink so Instagram accepts it
+  const clean = url.split("?")[0];
+
+  useEffect(() => {
+    // Load Instagram embed script
+    if (!(window as any)?.instgrm) {
+      const s = document.createElement("script");
+      s.src = "https://www.instagram.com/embed.js";
+      s.async = true;
+      document.body.appendChild(s);
+    } else {
+      (window as any).instgrm.Embeds.process();
+    }
+  }, [url]);
+
+  return (
+    <div className="feed-embed" style={{ width: "100%" }}>
+      <blockquote
+        className="instagram-media"
+        data-instgrm-permalink={clean}
+        data-instgrm-version="14"
+        style={{ margin: "1rem auto", width: "100%" }}
+      ></blockquote>
+    </div>
+  );
+}
+
+// YouTube
 function getYoutubeEmbedUrl(url: string): string | null {
   try {
     const u = new URL(url);
@@ -158,6 +186,7 @@ function YoutubeEmbed({ url }: { url: string }) {
   );
 }
 
+// SoundCloud
 function SoundcloudEmbed({ url }: { url: string }) {
   if (!url) return null;
   return (
@@ -170,6 +199,7 @@ function SoundcloudEmbed({ url }: { url: string }) {
   );
 }
 
+// Mixcloud
 function MixcloudEmbed({ url }: { url: string }) {
   if (!url) return null;
   return (
@@ -196,6 +226,7 @@ export default function FeedPage() {
   /* Load posts */
   useEffect(() => {
     const q = query(collection(db, "feedPosts"), orderBy("createdAt", "desc"));
+
     const unsub = onSnapshot(q, (snap) => {
       const rows: FeedPost[] = snap.docs.map((d) => {
         const data = d.data() as FeedPostFromDb;
@@ -209,6 +240,7 @@ export default function FeedPage() {
           youtubeUrl: data.youtubeUrl ?? undefined,
           soundcloudUrl: data.soundcloudUrl ?? undefined,
           mixcloudUrl: data.mixcloudUrl ?? undefined,
+          instagramUrl: data.instagramUrl ?? undefined,
           likes: data.likes ?? 0,
         };
       });
@@ -219,7 +251,7 @@ export default function FeedPage() {
     return () => unsub();
   }, []);
 
-  /* Submit new post */
+  /* Submit post */
   async function handlePost(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const form = e.currentTarget;
@@ -232,6 +264,7 @@ export default function FeedPage() {
     const youtubeUrl = (fd.get("youtubeUrl") as string)?.trim();
     const soundcloudUrl = (fd.get("soundcloudUrl") as string)?.trim();
     const mixcloudUrl = (fd.get("mixcloudUrl") as string)?.trim();
+    const instagramUrl = (fd.get("instagramUrl") as string)?.trim();
 
     if (!handle || !text) return;
     if (!user) return alert("Please sign in first.");
@@ -243,6 +276,7 @@ export default function FeedPage() {
       youtubeUrl: youtubeUrl || null,
       soundcloudUrl: soundcloudUrl || null,
       mixcloudUrl: mixcloudUrl || null,
+      instagramUrl: instagramUrl || null,
       createdAt: serverTimestamp(),
       uid: user.uid,
       likes: 0,
@@ -303,11 +337,17 @@ export default function FeedPage() {
               <input name="youtubeUrl" type="url" className="feed-input" />
             </div>
 
+            <div className="feed-field">
+              <label>Instagram link</label>
+              <input name="instagramUrl" type="url" className="feed-input" placeholder="Public Reel/Post URL"/>
+            </div>
+
             <div className="feed-form-row">
               <div className="feed-field">
                 <label>SoundCloud link</label>
                 <input name="soundcloudUrl" type="url" className="feed-input" />
               </div>
+
               <div className="feed-field">
                 <label>Mixcloud link</label>
                 <input name="mixcloudUrl" type="url" className="feed-input" />
@@ -340,10 +380,10 @@ export default function FeedPage() {
                 <p className="feed-text">{post.text}</p>
 
                 {post.youtubeUrl && <YoutubeEmbed url={post.youtubeUrl} />}
+                {post.instagramUrl && <InstagramEmbed url={post.instagramUrl} />}
                 {post.soundcloudUrl && <SoundcloudEmbed url={post.soundcloudUrl} />}
                 {post.mixcloudUrl && <MixcloudEmbed url={post.mixcloudUrl} />}
 
-                {/* LIKE BUTTON */}
                 <LikeButton postId={post.id} likes={post.likes} />
               </div>
             </article>
@@ -353,4 +393,3 @@ export default function FeedPage() {
     </div>
   );
 }
-

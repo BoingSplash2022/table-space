@@ -1,5 +1,4 @@
-// Updated ClipsPage with Like button feature
-
+// Updated ClipsPage with Like button feature + Instagram embed
 "use client";
 
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
@@ -19,7 +18,7 @@ import { db } from "@/lib/firebase";
 import { useAuthContext } from "@/context/AuthContext";
 
 /* -------------------------------------------------
-   Animated Like Button (consistent with Feed)
+   Animated Like Button
 -------------------------------------------------- */
 
 function LikeButton({ clipId, likes = 0 }: { clipId: string; likes: number }) {
@@ -29,7 +28,6 @@ function LikeButton({ clipId, likes = 0 }: { clipId: string; likes: number }) {
 
   const handleLike = async () => {
     if (!user || liked) return;
-
     setLiked(true);
     setCount((prev) => prev + 1);
 
@@ -47,20 +45,17 @@ function LikeButton({ clipId, likes = 0 }: { clipId: string; likes: number }) {
       disabled={!user || liked}
       className="
         flex items-center gap-2 ml-auto mt-2
-        text-gray-700 hover:text-black
-        transition-colors duration-150
+        text-gray-700 hover:text-black transition-colors duration-150
       "
     >
       <span
         style={{ fontSize: "1.3rem" }}
-        className={`
-          inline-block transition-transform duration-200
-          ${liked ? "scale-125" : "scale-100"}
-        `}
+        className={`inline-block transition-transform duration-200 ${
+          liked ? "scale-125" : "scale-100"
+        }`}
       >
         {liked ? "❤️‍🔥" : "🖤"}
       </span>
-
       <span>Fuckin' Love It! ({count})</span>
     </button>
   );
@@ -100,8 +95,8 @@ type Clip = {
 
 function timeSince(date: Date | null): string {
   if (!date) return "";
-  const diffMs = Date.now() - date.getTime();
-  const sec = Math.floor(diffMs / 1000);
+  const diff = Date.now() - date.getTime();
+  const sec = Math.floor(diff / 1000);
   if (sec < 60) return "just now";
   const min = Math.floor(sec / 60);
   if (min < 60) return `${min} min${min === 1 ? "" : "s"} ago`;
@@ -112,72 +107,90 @@ function timeSince(date: Date | null): string {
 }
 
 /* -------------------------------------------------
-   YouTube Embed Helper (with Shorts support)
+   INSTAGRAM EMBED
+-------------------------------------------------- */
+
+function InstagramEmbed({ url }: { url: string }) {
+  const clean = url.split("?")[0];
+
+  useEffect(() => {
+    if (!(window as any)?.instgrm) {
+      const s = document.createElement("script");
+      s.src = "https://www.instagram.com/embed.js";
+      s.async = true;
+      document.body.appendChild(s);
+    } else {
+      (window as any).instgrm.Embeds.process();
+    }
+  }, [url]);
+
+  return (
+    <div className="feed-embed" style={{ width: "100%" }}>
+      <blockquote
+        className="instagram-media"
+        data-instgrm-permalink={clean}
+        data-instgrm-version="14"
+        style={{ margin: "1rem auto", width: "100%" }}
+      ></blockquote>
+    </div>
+  );
+}
+
+/* -------------------------------------------------
+   YouTube Embed Helper
 -------------------------------------------------- */
 
 function getYoutubeEmbedUrl(url: string): string | null {
   try {
     const u = new URL(url);
-
-    if (u.hostname.includes("youtu.be")) {
-      const id = u.pathname.replace("/", "");
-      return `https://www.youtube.com/embed/${id}`;
-    }
+    if (u.hostname.includes("youtu.be"))
+      return `https://www.youtube.com/embed/${u.pathname.replace("/", "")}`;
 
     if (u.hostname.includes("youtube.com")) {
       const v = u.searchParams.get("v");
       if (v) return `https://www.youtube.com/embed/${v}`;
-
       if (u.pathname.startsWith("/embed/")) return url;
-
       if (u.pathname.startsWith("/shorts/")) {
         const id = u.pathname.split("/shorts/")[1]?.split("?")[0];
         return id ? `https://www.youtube.com/embed/${id}` : null;
       }
     }
-  } catch {
-    return null;
-  }
+  } catch {}
   return null;
 }
 
 function YoutubeEmbed({ url }: { url: string }) {
   const embedUrl = getYoutubeEmbedUrl(url);
   if (!embedUrl) return null;
-
   return (
     <div className="feed-embed">
-      <iframe
-        className="embed-frame youtube"
-        src={embedUrl}
-        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-        allowFullScreen
-        loading="lazy"
-      />
+      <iframe className="embed-frame youtube" src={embedUrl} allowFullScreen />
     </div>
   );
 }
 
 function SoundcloudEmbed({ url }: { url: string }) {
   if (!url) return null;
-  const playerUrl = `https://w.soundcloud.com/player/?url=${encodeURIComponent(
-    url
-  )}&color=%23000000&auto_play=false&hide_related=false&show_comments=true&show_user=true&show_reposts=false&show_teaser=true`;
   return (
     <div className="feed-embed">
-      <iframe className="embed-frame soundcloud" src={playerUrl} />
+      <iframe
+        className="embed-frame soundcloud"
+        src={`https://w.soundcloud.com/player/?url=${encodeURIComponent(url)}`}
+      />
     </div>
   );
 }
 
 function MixcloudEmbed({ url }: { url: string }) {
   if (!url) return null;
-  const widgetUrl = `https://www.mixcloud.com/widget/iframe/?hide_cover=1&mini=1&feed=${encodeURIComponent(
-    url
-  )}`;
   return (
     <div className="feed-embed">
-      <iframe className="embed-frame mixcloud" src={widgetUrl} />
+      <iframe
+        className="embed-frame mixcloud"
+        src={`https://www.mixcloud.com/widget/iframe/?hide_cover=1&mini=1&feed=${encodeURIComponent(
+          url
+        )}`}
+      />
     </div>
   );
 }
@@ -204,26 +217,27 @@ export default function ClipsPage() {
     if (activeProfile?.handle) setHandle(activeProfile.handle);
   }, [activeProfile]);
 
-  /* Load clips from Firestore */
+  /* Load clips */
   useEffect(() => {
     const ref = collection(db, "clips");
     const q = query(ref, orderBy("createdAt", "desc"));
 
     const unsub = onSnapshot(q, (snap) => {
-      const rows: Clip[] = snap.docs.map((d) => {
-        const data = d.data() as ClipDocFromDb;
-        return {
-          id: d.id,
-          handle: data.handle ?? "@yourdjname",
-          title: data.title ?? "",
-          url: data.url ?? "",
-          platform: data.platform ?? "youtube",
-          description: data.description ?? "",
-          createdAt: data.createdAt ? data.createdAt.toDate() : null,
-          likes: data.likes ?? 0,
-        };
-      });
-      setClips(rows);
+      setClips(
+        snap.docs.map((d) => {
+          const data = d.data() as ClipDocFromDb;
+          return {
+            id: d.id,
+            handle: data.handle ?? "@yourdjname",
+            title: data.title ?? "",
+            url: data.url ?? "",
+            platform: data.platform ?? "youtube",
+            description: data.description ?? "",
+            createdAt: data.createdAt?.toDate() ?? null,
+            likes: data.likes ?? 0,
+          };
+        })
+      );
     });
 
     return () => unsub();
@@ -234,12 +248,8 @@ export default function ClipsPage() {
     e.preventDefault();
     setErrorMessage(null);
 
-    const trimmedHandle = handle.trim();
-    const trimmedTitle = title.trim();
-    const trimmedUrl = url.trim();
-
-    if (!trimmedHandle || !trimmedTitle || !trimmedUrl) {
-      setErrorMessage("Please fill in handle, title and link.");
+    if (!handle.trim() || !title.trim() || !url.trim()) {
+      setErrorMessage("Please fill in handle, title, and link.");
       return;
     }
 
@@ -252,13 +262,11 @@ export default function ClipsPage() {
       setSubmitting(true);
 
       await addDoc(collection(db, "clips"), {
-        handle: trimmedHandle.startsWith("@")
-          ? trimmedHandle
-          : `@${trimmedHandle}`,
-        title: trimmedTitle,
-        url: trimmedUrl,
+        handle: handle.startsWith("@") ? handle : `@${handle}`,
+        title,
+        url,
         platform,
-        description: description.trim(),
+        description,
         createdAt: serverTimestamp(),
         uid: user.uid,
         likes: 0,
@@ -272,27 +280,29 @@ export default function ClipsPage() {
 
       setShowForm(false);
     } catch (err) {
-      console.error("Error posting clip", err);
-      setErrorMessage("Could not post clip. Please try again.");
+      console.error("Clip posting failed:", err);
+      setErrorMessage("Could not post clip. Try again.");
     } finally {
       setSubmitting(false);
     }
   }
 
+  /* ------------------------------------------------- */
+
   return (
     <div className="feed">
       <div className="feed-header">
         <h1>Clips</h1>
-        <p>Share scratch clips, routines and practice sessions.</p>
+        <p>Share scratch clips, routines, and practice sessions.</p>
       </div>
 
-      {/* Toggle button */}
+      {/* Toggle */}
       <div className="flex justify-center mb-3">
         <button
           type="button"
-          onClick={() => setShowForm((p) => !p)}
           className="messages-compose-send"
           style={{ minWidth: 180 }}
+          onClick={() => setShowForm((p) => !p)}
         >
           {showForm ? "Cancel clip ⌃" : "Add new clip ⌄"}
         </button>
@@ -304,7 +314,7 @@ export default function ClipsPage() {
           <form onSubmit={handleSubmit} className="feed-form-inner">
             <div className="feed-form-row">
               <div className="feed-field">
-                <label className="feed-label">Handle</label>
+                <label>Handle</label>
                 <input
                   type="text"
                   className="feed-input"
@@ -314,7 +324,7 @@ export default function ClipsPage() {
               </div>
 
               <div className="feed-field" style={{ maxWidth: 200 }}>
-                <label className="feed-label">Platform</label>
+                <label>Platform</label>
                 <select
                   className="feed-select"
                   value={platform}
@@ -325,13 +335,13 @@ export default function ClipsPage() {
                   <option value="youtube">YouTube</option>
                   <option value="soundcloud">SoundCloud</option>
                   <option value="mixcloud">Mixcloud</option>
-                  <option value="other">Other</option>
+                  <option value="other">Other / Instagram</option>
                 </select>
               </div>
             </div>
 
             <div className="feed-field">
-              <label className="feed-label">Clip title</label>
+              <label>Clip title</label>
               <input
                 type="text"
                 className="feed-input"
@@ -341,22 +351,23 @@ export default function ClipsPage() {
             </div>
 
             <div className="feed-field">
-              <label className="feed-label">Clip link</label>
+              <label>Clip link</label>
               <input
                 type="url"
                 className="feed-input"
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
+                placeholder="YouTube / Insta Reel / SoundCloud / Mixcloud"
               />
             </div>
 
             <div className="feed-field">
-              <label className="feed-label">Description (optional)</label>
+              <label>Description (optional)</label>
               <textarea
                 className="feed-textarea"
+                rows={3}
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                rows={3}
               />
             </div>
 
@@ -364,7 +375,11 @@ export default function ClipsPage() {
               <p className="auth-error">{errorMessage}</p>
             )}
 
-            <button type="submit" className="feed-submit" disabled={submitting}>
+            <button
+              type="submit"
+              className="feed-submit"
+              disabled={submitting}
+            >
               {submitting ? "Posting…" : "Post clip"}
             </button>
           </form>
@@ -376,6 +391,12 @@ export default function ClipsPage() {
         {clips.map((clip) => {
           const initial =
             clip.handle.replace("@", "").charAt(0).toUpperCase() || "D";
+
+          /* Instagram detection */
+          const isInstagram =
+            clip.url.includes("instagram.com/reel") ||
+            clip.url.includes("instagram.com/p") ||
+            clip.url.includes("instagram.com");
 
           return (
             <article key={clip.id} className="feed-post">
@@ -398,19 +419,26 @@ export default function ClipsPage() {
                   <p className="feed-text mb-2">{clip.description}</p>
                 )}
 
-                {clip.platform === "youtube" && (
+                {/* INSTAGRAM */}
+                {isInstagram && <InstagramEmbed url={clip.url} />}
+
+                {/* YOUTUBE */}
+                {!isInstagram && clip.platform === "youtube" && (
                   <YoutubeEmbed url={clip.url} />
                 )}
 
-                {clip.platform === "soundcloud" && (
+                {/* SOUNDCLOUD */}
+                {!isInstagram && clip.platform === "soundcloud" && (
                   <SoundcloudEmbed url={clip.url} />
                 )}
 
-                {clip.platform === "mixcloud" && (
+                {/* MIXCLOUD */}
+                {!isInstagram && clip.platform === "mixcloud" && (
                   <MixcloudEmbed url={clip.url} />
                 )}
 
-                {clip.platform === "other" && (
+                {/* OTHER LINKS */}
+                {!isInstagram && clip.platform === "other" && (
                   <a
                     href={clip.url}
                     target="_blank"
