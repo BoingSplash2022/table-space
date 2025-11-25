@@ -13,14 +13,28 @@ import {
   orderBy,
   Timestamp,
   arrayUnion,
+  getDocs,
+  limit,
+  startAt,
+  endAt,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuthContext } from "@/context/AuthContext";
 import { useSearchParams } from "next/navigation";
 
+import WatchTogether from "./WatchTogether";
+import VoiceChat from "./VoiceChat";
+
+/* -----------------------------------------------------------
+   TYPES
+------------------------------------------------------------ */
+
 type Thread = {
   id: string;
-  otherHandle: string;
+  participants: string[];
+  otherHandle: string | null;
+  name?: string;
+  isGroup?: boolean;
   lastMessagePreview: string;
   lastMessageAt: Date | null;
   unread: boolean;
@@ -34,6 +48,15 @@ type ChatMessage = {
   mine: boolean;
 };
 
+type Profile = {
+  id: string;
+  handle: string;
+};
+
+/* -----------------------------------------------------------
+   COMPONENT
+------------------------------------------------------------ */
+
 export default function MessagesClient() {
   const { user, activeProfile } = useAuthContext();
   const searchParams = useSearchParams();
@@ -42,232 +65,231 @@ export default function MessagesClient() {
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [text, setText] = useState("");
-  const [loadingThreads, setLoadingThreads] = useState(false);
-  const [loadingMessages, setLoadingMessages] = useState(false);
 
-  // New-thread UI state
+  // Direct message
   const [showNewThread, setShowNewThread] = useState(false);
   const [newHandle, setNewHandle] = useState("");
 
-  // From Buy/Sell "Message seller"
-  const sellerFromQuery = searchParams.get("seller");
-  const listingTitleFromQuery = searchParams.get("listingTitle");
+  // Group chat
+  const [showGroupForm, setShowGroupForm] = useState(false);
+  const [groupName, setGroupName] = useState("");
+  const [groupSearch, setGroupSearch] = useState("");
+  const [groupResults, setGroupResults] = useState<Profile[]>([]);
+  const [selectedMembers, setSelectedMembers] = useState<Profile[]>([]);
+
+  // Media features
+  const [showWatch, setShowWatch] = useState(false);
+  const [showVoice, setShowVoice] = useState(false);
 
   const canUseChat = Boolean(user && activeProfile);
 
-  // -------------------- Load threads for this profile --------------------
+  /* -----------------------------------------------------------
+     LOAD THREADS
+  ------------------------------------------------------------ */
   useEffect(() => {
     if (!user || !activeProfile) {
       setThreads([]);
-      setActiveThreadId(null);
       return;
     }
 
-    setLoadingThreads(true);
-
-    try {
-      const threadsRef = collection(db, "threads");
-      // No orderBy here to avoid composite index requirement in rules
-      const q = query(
-        threadsRef,
-        where("participants", "array-contains", activeProfile.handle)
-      );
-
-      const unsub = onSnapshot(
-        q,
-        (snap) => {
-          const list: Thread[] = snap.docs
-            .map((d) => {
-              const data = d.data() as any;
-              const others: string[] = (data.participants || []).filter(
-                (h: string) => h !== activeProfile.handle
-              );
-              const otherHandle = others[0] || "Unknown DJ";
-
-              const lastAt: Date | null =
-                data.lastMessageAt instanceof Timestamp
-                  ? data.lastMessageAt.toDate()
-                  : data.lastMessageAt?.toDate
-                  ? data.lastMessageAt.toDate()
-                  : null;
-
-              const unread =
-                Boolean(data.lastMessageFrom) &&
-                data.lastMessageFrom !== activeProfile.handle &&
-                !(data.lastMessageReadBy || []).includes(activeProfile.handle);
-
-              return {
-                id: d.id,
-                otherHandle,
-                lastMessagePreview: data.lastMessagePreview ?? "",
-                lastMessageAt: lastAt,
-                unread,
-              };
-            })
-            // sort newest first on the client
-            .sort((a, b) => {
-              const aTime = a.lastMessageAt?.getTime() ?? 0;
-              const bTime = b.lastMessageAt?.getTime() ?? 0;
-              return bTime - aTime;
-            });
-
-          setThreads(list);
-          setLoadingThreads(false);
-
-          if (!activeThreadId && list.length > 0) {
-            setActiveThreadId(list[0].id);
-          }
-        },
-        (err) => {
-          console.error("Error loading threads", err);
-          setLoadingThreads(false);
-        }
-      );
-
-      return () => unsub();
-    } catch (err) {
-      console.error("Error setting up threads listener", err);
-      setLoadingThreads(false);
-    }
-  }, [user, activeProfile, activeThreadId]);
-
-  // -------------------- Load messages for active thread --------------------
-  useEffect(() => {
-    if (!user || !activeProfile || !activeThreadId) {
-      setMessages([]);
-      return;
-    }
-
-    setLoadingMessages(true);
-
-    try {
-      const msgsRef = collection(db, "threads", activeThreadId, "messages");
-      const q = query(msgsRef, orderBy("createdAt", "asc"));
-
-      const unsub = onSnapshot(
-        q,
-        (snap) => {
-          const list: ChatMessage[] = snap.docs.map((d) => {
-            const data = d.data() as any;
-            const created: Date | null =
-              data.createdAt instanceof Timestamp
-                ? data.createdAt.toDate()
-                : data.createdAt?.toDate
-                ? data.createdAt.toDate()
-                : null;
-
-            return {
-              id: d.id,
-              fromHandle: data.fromHandle,
-              text: data.text,
-              createdAt: created,
-              mine: data.fromHandle === activeProfile.handle,
-            };
-          });
-
-          setMessages(list);
-          setLoadingMessages(false);
-        },
-        (err) => {
-          console.error("Error loading messages", err);
-          setLoadingMessages(false);
-        }
-      );
-
-      return () => unsub();
-    } catch (err) {
-      console.error("Error setting up messages listener", err);
-      setLoadingMessages(false);
-    }
-  }, [user, activeProfile, activeThreadId]);
-
-  // -------------------- Mark active thread as read --------------------
-  useEffect(() => {
-    if (!user || !activeProfile || !activeThreadId) return;
-
-    const threadRef = doc(db, "threads", activeThreadId);
-    updateDoc(threadRef, {
-      lastMessageReadBy: arrayUnion(activeProfile.handle),
-    }).catch((err) => {
-      console.error("Error marking thread as read", err);
-    });
-  }, [user, activeProfile, activeThreadId]);
-
-  // -------------------- Prefill text from Buy/Sell link --------------------
-  useEffect(() => {
-    if (!sellerFromQuery) return;
-
-    setText(
-      `Hey ${sellerFromQuery}, I saw your listing on Buy/Sell: ${
-        listingTitleFromQuery ?? ""
-      }`
+    const qThreads = query(
+      collection(db, "threads"),
+      where("participants", "array-contains", activeProfile.handle)
     );
-  }, [sellerFromQuery, listingTitleFromQuery]);
 
-  // -------------------- Helpers --------------------
-  async function createThreadWithHandle(handle: string): Promise<string | null> {
-    if (!activeProfile) return null;
+    const unsub = onSnapshot(qThreads, (snap) => {
+      const list: Thread[] = snap.docs
+        .map((d) => {
+          const data = d.data() as any;
+          const isGroup = data.isGroup === true;
 
-    const clean = handle.trim();
-    if (!clean) return null;
+          const others = (data.participants || []).filter(
+            (h: string) => h !== activeProfile.handle
+          );
 
-    const normalized =
-      clean.startsWith("@") || clean.startsWith("#") ? clean : `@${clean}`;
+          const otherHandle = isGroup ? null : others[0] || "Unknown DJ";
 
-    const threadRef = await addDoc(collection(db, "threads"), {
-      participants: [activeProfile.handle, normalized],
+          const lastAt =
+            data.lastMessageAt instanceof Timestamp
+              ? data.lastMessageAt.toDate()
+              : data.lastMessageAt?.toDate?.() ?? null;
+
+          const unread =
+            data.lastMessageFrom &&
+            data.lastMessageFrom !== activeProfile.handle &&
+            !(data.lastMessageReadBy || []).includes(activeProfile.handle);
+
+          return {
+            id: d.id,
+            participants: data.participants,
+            name: data.name || null,
+            otherHandle,
+            isGroup,
+            lastMessagePreview: data.lastMessagePreview ?? "",
+            lastMessageAt: lastAt,
+            unread,
+          };
+        })
+        .sort(
+          (a, b) =>
+            (b.lastMessageAt?.getTime() ?? 0) -
+            (a.lastMessageAt?.getTime() ?? 0)
+        );
+
+      setThreads(list);
+
+      if (!activeThreadId && list.length > 0) {
+        setActiveThreadId(list[0].id);
+      }
+    });
+
+    return () => unsub();
+  }, [user, activeProfile, activeThreadId]);
+
+  /* -----------------------------------------------------------
+     LOAD MESSAGES
+  ------------------------------------------------------------ */
+  useEffect(() => {
+    if (!activeThreadId || !activeProfile) return;
+
+    const qMsgs = query(
+      collection(db, "threads", activeThreadId, "messages"),
+      orderBy("createdAt", "asc")
+    );
+
+    const unsub = onSnapshot(qMsgs, (snap) => {
+      const list: ChatMessage[] = snap.docs.map((d) => {
+        const data = d.data() as any;
+        const created =
+          data.createdAt instanceof Timestamp
+            ? data.createdAt.toDate()
+            : data.createdAt?.toDate?.() ?? null;
+
+        return {
+          id: d.id,
+          fromHandle: data.fromHandle,
+          text: data.text,
+          createdAt: created,
+          mine: data.fromHandle === activeProfile.handle,
+        };
+      });
+
+      setMessages(list);
+    });
+
+    return () => unsub();
+  }, [activeThreadId, activeProfile]);
+
+  /* -----------------------------------------------------------
+     MARK THREAD AS READ
+  ------------------------------------------------------------ */
+  useEffect(() => {
+    if (!activeThreadId || !activeProfile) return;
+
+    updateDoc(doc(db, "threads", activeThreadId), {
+      lastMessageReadBy: arrayUnion(activeProfile.handle),
+    }).catch(() => {});
+  }, [activeThreadId, activeProfile]);
+
+  /* -----------------------------------------------------------
+     SEARCH PROFILES
+  ------------------------------------------------------------ */
+  useEffect(() => {
+    if (!groupSearch.trim()) {
+      setGroupResults([]);
+      return;
+    }
+
+    const fetch = async () => {
+      const qProfiles = query(
+        collection(db, "profiles"),
+        orderBy("handle"),
+        startAt(groupSearch),
+        endAt(groupSearch + "~"),
+        limit(10)
+      );
+
+      const snap = await getDocs(qProfiles);
+      setGroupResults(
+        snap.docs.map((d) => ({
+          id: d.id,
+          handle: d.data().handle,
+        }))
+      );
+    };
+
+    fetch();
+  }, [groupSearch]);
+
+  /* -----------------------------------------------------------
+     CREATE GROUP CHAT
+  ------------------------------------------------------------ */
+  async function createGroupChat(e: FormEvent) {
+    e.preventDefault();
+    if (!activeProfile || selectedMembers.length === 0) return;
+
+    const participants = [
+      activeProfile.handle,
+      ...selectedMembers.map((m) => m.handle),
+    ];
+
+    const docRef = await addDoc(collection(db, "threads"), {
+      participants,
+      isGroup: true,
+      name: groupName || null,
+      createdBy: activeProfile.handle,
       lastMessagePreview: "",
       lastMessageAt: serverTimestamp(),
       lastMessageFrom: activeProfile.handle,
       lastMessageReadBy: [activeProfile.handle],
     });
 
-    return threadRef.id;
+    setActiveThreadId(docRef.id);
+    setShowGroupForm(false);
+    setGroupName("");
+    setSelectedMembers([]);
   }
 
-  // New-thread form in the sidebar
-  async function handleCreateThread(e: FormEvent) {
-    e.preventDefault();
+  /* -----------------------------------------------------------
+     CREATE DIRECT MESSAGE
+  ------------------------------------------------------------ */
+  async function createDirectHandle() {
     if (!activeProfile || !newHandle.trim()) return;
 
-    const threadId = await createThreadWithHandle(newHandle);
-    if (!threadId) return;
+    const handle =
+      newHandle.startsWith("@") ? newHandle.trim() : `@${newHandle.trim()}`;
 
-    setActiveThreadId(threadId);
+    const docRef = await addDoc(collection(db, "threads"), {
+      participants: [activeProfile.handle, handle],
+      isGroup: false,
+      lastMessagePreview: "",
+      lastMessageAt: serverTimestamp(),
+      lastMessageFrom: activeProfile.handle,
+      lastMessageReadBy: [activeProfile.handle],
+    });
+
+    setActiveThreadId(docRef.id);
     setShowNewThread(false);
     setNewHandle("");
   }
 
-  // Main "Send" button in the chat composer
+  /* -----------------------------------------------------------
+     SEND MESSAGE
+  ------------------------------------------------------------ */
   async function handleSendMessage(e: FormEvent) {
     e.preventDefault();
-    if (!user || !activeProfile || !text.trim()) return;
+    if (!text.trim() || !activeThreadId || !activeProfile) return;
 
-    let threadId = activeThreadId;
+    const msg = text.trim();
 
-    // If no thread selected but we have a seller from query, start that thread
-    if (!threadId && sellerFromQuery) {
-      threadId = await createThreadWithHandle(sellerFromQuery);
-      if (!threadId) return;
-      setActiveThreadId(threadId);
-    }
-
-    if (!threadId) {
-      return;
-    }
-
-    const trimmed = text.trim();
-
-    const msgsRef = collection(db, "threads", threadId, "messages");
-    await addDoc(msgsRef, {
+    await addDoc(collection(db, "threads", activeThreadId, "messages"), {
       fromHandle: activeProfile.handle,
-      text: trimmed,
+      text: msg,
       createdAt: serverTimestamp(),
     });
 
-    const threadRef = doc(db, "threads", threadId);
-    await updateDoc(threadRef, {
-      lastMessagePreview: trimmed,
+    await updateDoc(doc(db, "threads", activeThreadId), {
+      lastMessagePreview: msg,
       lastMessageAt: serverTimestamp(),
       lastMessageFrom: activeProfile.handle,
       lastMessageReadBy: [activeProfile.handle],
@@ -276,110 +298,170 @@ export default function MessagesClient() {
     setText("");
   }
 
-  const activeThread = threads.find((t) => t.id === activeThreadId) ?? null;
-
-  // -------------------- RENDER --------------------
+  /* -----------------------------------------------------------
+     UI
+  ------------------------------------------------------------ */
 
   if (!canUseChat) {
     return (
       <div className="feed">
         <div className="feed-header">
           <h1>Messages</h1>
-          <p>Please pick or create a profile first on the Profile page.</p>
+          <p>Please pick or create a profile first.</p>
         </div>
       </div>
     );
   }
 
+  const activeThread = threads.find((t) => t.id === activeThreadId) ?? null;
+
   return (
     <div className="feed">
       <div className="feed-header">
         <h1>Messages</h1>
-        <p>Chat one-to-one with other DJs on TableSpace.</p>
+        <p>Chat, groups & watch together.</p>
       </div>
 
       <div className="messages-layout">
-        {/* LEFT: conversations + Start conversation */}
+        {/* SIDEBAR */}
         <aside className="messages-sidebar">
-          <div className="messages-sidebar-header">
-            <span>Conversations</span>
-          </div>
+          <div className="messages-sidebar-header">Conversations</div>
 
+          {/* DIRECT MESSAGE */}
           <button
-            type="button"
             className="messages-compose-send"
-            style={{ margin: "0 0.5rem 0.5rem" }}
-            onClick={() => setShowNewThread((prev) => !prev)}
+            onClick={() => {
+              setShowGroupForm(false);
+              setShowNewThread((p) => !p);
+            }}
           >
-            {showNewThread ? "Cancel" : "Start conversation"}
+            {showNewThread ? "Cancel" : "Start direct message"}
           </button>
 
           {showNewThread && (
-            <form
-              onSubmit={handleCreateThread}
-              style={{ padding: "0 0.5rem 0.75rem" }}
-            >
-              <label className="feed-label" htmlFor="newHandle">
-                DJ handle
-              </label>
+            <div className="p-3">
               <input
-                id="newHandle"
                 className="feed-input"
-                placeholder="@yourdjfriend"
+                placeholder="@handle"
                 value={newHandle}
                 onChange={(e) => setNewHandle(e.target.value)}
               />
               <button
-                type="submit"
-                className="messages-compose-send"
-                style={{ marginTop: "0.5rem", width: "100%" }}
+                className="messages-compose-send w-full mt-2"
                 disabled={!newHandle.trim()}
+                onClick={createDirectHandle}
               >
-                Create thread
+                Create DM
+              </button>
+            </div>
+          )}
+
+          {/* GROUP CHAT */}
+          <button
+            className="messages-compose-send"
+            onClick={() => {
+              setShowNewThread(false);
+              setShowGroupForm((p) => !p);
+            }}
+          >
+            {showGroupForm ? "Cancel" : "New group chat"}
+          </button>
+
+          {showGroupForm && (
+            <form className="p-3 space-y-2" onSubmit={createGroupChat}>
+              <label className="feed-label">Group name</label>
+              <input
+                className="feed-input"
+                value={groupName}
+                onChange={(e) => setGroupName(e.target.value)}
+                placeholder="Optional"
+              />
+
+              <label className="feed-label">Add DJs</label>
+              <input
+                className="feed-input"
+                value={groupSearch}
+                onChange={(e) => setGroupSearch(e.target.value)}
+                placeholder="Search @handles"
+              />
+
+              {groupResults.length > 0 && (
+                <div className="border rounded p-2 bg-white">
+                  {groupResults.map((p) => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      className="block w-full text-left p-1 hover:bg-gray-100"
+                      onClick={() => {
+                        if (selectedMembers.length >= 5) return;
+                        if (
+                          !selectedMembers.find((m) => m.handle === p.handle)
+                        ) {
+                          setSelectedMembers((prev) => [...prev, p]);
+                        }
+                      }}
+                    >
+                      {p.handle}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {selectedMembers.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {selectedMembers.map((m) => (
+                    <span
+                      key={m.handle}
+                      className="px-2 py-1 bg-blue-200 rounded-full text-sm"
+                    >
+                      {m.handle}
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              <button
+                className="messages-compose-send w-full"
+                disabled={selectedMembers.length === 0}
+              >
+                Create group chat
               </button>
             </form>
           )}
 
+          {/* THREAD LIST */}
           <div className="messages-thread-list">
-            {loadingThreads && (
-              <div className="messages-empty">Loading conversations…</div>
-            )}
-
-            {!loadingThreads && threads.length === 0 && (
-              <div className="messages-empty">
-                No conversations yet. Start one with the button above or from a
-                Buy/Sell listing.
-              </div>
-            )}
-
             {threads.map((thread) => {
-              const initial = thread.otherHandle
-                .replace("@", "")
-                .charAt(0)
-                .toUpperCase();
-
               const isActive = thread.id === activeThreadId;
-              const itemClass =
-                "messages-thread-item" +
-                (isActive ? " messages-thread-item-active" : "");
 
               return (
                 <button
                   key={thread.id}
-                  className={itemClass}
+                  className={
+                    "messages-thread-item" +
+                    (isActive ? " messages-thread-item-active" : "")
+                  }
                   onClick={() => setActiveThreadId(thread.id)}
-                  type="button"
                 >
-                  <div className="messages-thread-avatar">{initial}</div>
+                  <div className="messages-thread-avatar">
+                    {thread.isGroup
+                      ? thread.name?.charAt(0).toUpperCase() || "G"
+                      : thread.otherHandle?.replace("@", "").charAt(0).toUpperCase()}
+                  </div>
+
                   <div className="messages-thread-main">
                     <div className="messages-thread-row">
                       <span className="messages-thread-handle">
-                        {thread.otherHandle}
+                        {thread.isGroup
+                          ? thread.name ||
+                            thread.participants.join(", ")
+                          : thread.otherHandle}
                       </span>
                       {thread.unread && (
                         <span className="messages-thread-unread">NEW</span>
                       )}
                     </div>
+
                     <div className="messages-thread-preview">
                       {thread.lastMessagePreview || "No messages yet"}
                     </div>
@@ -390,78 +472,112 @@ export default function MessagesClient() {
           </div>
         </aside>
 
-        {/* RIGHT: active conversation */}
+        {/* THREAD VIEW */}
         <section className="messages-thread">
           <div className="messages-thread-header">
             {activeThread ? (
               <>
                 <div className="messages-thread-avatar">
-                  {activeThread.otherHandle
-                    .replace("@", "")
-                    .charAt(0)
-                    .toUpperCase()}
+                  {activeThread.isGroup
+                    ? activeThread.name?.charAt(0).toUpperCase() ?? "G"
+                    : activeThread.otherHandle
+                        ?.replace("@", "")
+                        .charAt(0)
+                        .toUpperCase()}
                 </div>
+
                 <div>
                   <div className="messages-thread-handle">
-                    {activeThread.otherHandle}
+                    {activeThread.isGroup
+                      ? activeThread.name ??
+                        activeThread.participants.join(", ")
+                      : activeThread.otherHandle}
                   </div>
-                  <div className="messages-thread-sub">
-                    Chatting as {activeProfile?.handle}
+
+                  {activeThread.isGroup && (
+                    <div className="text-xs text-gray-500">
+                      Members: {activeThread.participants.join(", ")}
+                    </div>
+                  )}
+
+                  {/* FEATURE BUTTONS */}
+                  <div className="flex gap-2 mt-2">
+                    <button
+                      className="messages-compose-send"
+                      onClick={() => {
+                        setShowWatch((p) => !p);
+                        setShowVoice(false);
+                      }}
+                    >
+                      {showWatch ? "Close watch" : "Watch together"}
+                    </button>
+
+                    <button
+                      className="messages-compose-send"
+                      onClick={() => {
+                        setShowVoice((p) => !p);
+                        setShowWatch(false);
+                      }}
+                    >
+                      {showVoice ? "Close voice" : "Voice chat"}
+                    </button>
                   </div>
                 </div>
               </>
             ) : (
               <div className="messages-thread-sub">
-                Pick a conversation on the left, click “Start conversation”, or
-                start one from a Buy/Sell listing using “Message seller”.
+                Select a conversation or start one.
               </div>
             )}
           </div>
 
-          <div className="messages-thread-body">
-            {loadingMessages && (
-              <div className="messages-empty">Loading messages…</div>
-            )}
+          {/* WATCH TOGETHER */}
+          {activeThreadId && showWatch && (
+            <div className="p-3 border-b bg-gray-100">
+              <WatchTogether threadId={activeThreadId} />
+            </div>
+          )}
 
-            {!loadingMessages &&
-              messages.map((m) => (
+          {/* VOICE CHAT */}
+          {activeThreadId && showVoice && (
+            <div className="p-3 border-b bg-gray-100">
+              <VoiceChat threadId={activeThreadId} />
+            </div>
+          )}
+
+          {/* MESSAGES */}
+          <div className="messages-thread-body">
+            {messages.map((m) => (
+              <div
+                key={m.id}
+                className={
+                  "messages-bubble-row " +
+                  (m.mine
+                    ? "messages-bubble-row-me"
+                    : "messages-bubble-row-them")
+                }
+              >
                 <div
-                  key={m.id}
                   className={
-                    "messages-bubble-row " +
+                    "messages-bubble " +
                     (m.mine
-                      ? "messages-bubble-row-me"
-                      : "messages-bubble-row-them")
+                      ? "messages-bubble-me"
+                      : "messages-bubble-them")
                   }
                 >
-                  <div
-                    className={
-                      "messages-bubble " +
-                      (m.mine
-                        ? "messages-bubble-me"
-                        : "messages-bubble-them")
-                    }
-                  >
-                    {m.text}
-                  </div>
+                  {m.text}
                 </div>
-              ))}
-
-            {!loadingMessages && messages.length === 0 && activeThread && (
-              <div className="messages-empty">
-                No messages yet. Say hi to start the conversation.
               </div>
-            )}
+            ))}
           </div>
 
-          {/* Composer */}
+          {/* COMPOSE MESSAGE */}
           <form className="messages-compose" onSubmit={handleSendMessage}>
             <textarea
               className="messages-compose-input"
               placeholder="Type a message…"
               value={text}
               onChange={(e) => setText(e.target.value)}
-              rows={1}
             />
             <button
               type="submit"

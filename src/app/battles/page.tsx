@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useState, ChangeEvent } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import {
   addDoc,
   collection,
@@ -10,14 +10,13 @@ import {
   orderBy,
   query,
   serverTimestamp,
-  Timestamp,
   updateDoc,
 } from "firebase/firestore";
 import { db } from "../../lib/firebase";
 import { useAuthContext } from "../../context/AuthContext";
 
 /* ----------------------------------------------------
-   Like Button
+   LIKE BUTTON
 ---------------------------------------------------- */
 function LikeButton({ battleId, likes }: { battleId: string; likes: number }) {
   const { user } = useAuthContext();
@@ -37,9 +36,7 @@ function LikeButton({ battleId, likes }: { battleId: string; likes: number }) {
     localStorage.setItem(`liked-battle-${battleId}`, "true");
 
     try {
-      await updateDoc(doc(db, "battles", battleId), {
-        likes: increment(1),
-      });
+      await updateDoc(doc(db, "battles", battleId), { likes: increment(1) });
     } catch (err) {
       console.error("Error liking battle:", err);
     }
@@ -49,7 +46,7 @@ function LikeButton({ battleId, likes }: { battleId: string; likes: number }) {
     <button
       onClick={handleLike}
       disabled={!user || liked}
-      className="flex items-center justify-center gap-2 mt-4 w-full text-gray-700 hover:text-black transition"
+      className="flex items-center justify-center gap-2 mt-4 text-gray-700 hover:text-black transition w-full"
     >
       <span
         style={{ fontSize: "1.5rem" }}
@@ -63,7 +60,7 @@ function LikeButton({ battleId, likes }: { battleId: string; likes: number }) {
 }
 
 /* ----------------------------------------------------
-   Comments Component (Lazy-loading)
+   COMMENTS SECTION — SUBTLE GREY PILL BUTTONS
 ---------------------------------------------------- */
 function CommentsSection({ battleId }: { battleId: string }) {
   const { user, activeProfile } = useAuthContext();
@@ -75,9 +72,8 @@ function CommentsSection({ battleId }: { battleId: string }) {
   const [loading, setLoading] = useState(false);
   const [newComment, setNewComment] = useState("");
 
-  // Lazy load comments when first opened
   const loadComments = () => {
-    if (loading || open) return; // already loaded
+    if (loading || open) return;
 
     setOpen(true);
     setLoading(true);
@@ -93,6 +89,7 @@ function CommentsSection({ battleId }: { battleId: string }) {
         text: d.data().text,
         createdAt: d.data().createdAt?.toDate() ?? new Date(),
       }));
+
       setComments(rows);
       setLoading(false);
     });
@@ -114,14 +111,19 @@ function CommentsSection({ battleId }: { battleId: string }) {
   };
 
   return (
-    <div className="mt-4 border-t border-gray-300 pt-3">
-      {/* Toggle button */}
+    <div className="mt-5 border-t border-gray-300 pt-4">
+
+      {/* ------- Toggle button (STYLE C — Subtle Grey Pill) ------- */}
       {!open && (
         <button
           onClick={loadComments}
-          className="text-sm text-blue-500 underline"
+          className="
+            text-sm px-4 py-1 rounded-full
+            bg-gray-200 text-gray-700
+            hover:bg-gray-300 transition
+          "
         >
-          Show comments
+          Show comments ↓
         </button>
       )}
 
@@ -129,32 +131,44 @@ function CommentsSection({ battleId }: { battleId: string }) {
         <>
           <button
             onClick={() => setOpen(false)}
-            className="text-sm text-blue-500 underline mb-2"
+            className="
+              text-sm px-4 py-1 rounded-full
+              bg-gray-200 text-gray-700
+              hover:bg-gray-300 transition mb-2
+            "
           >
-            Hide comments
+            Hide comments ↑
           </button>
 
-          {/* Loading */}
-          {loading && <p className="text-sm text-gray-500">Loading…</p>}
+          {loading && (
+            <p className="text-sm text-gray-500">Loading…</p>
+          )}
 
-          {/* Comment list */}
+          {/* comment list */}
+          {comments.length === 0 && !loading && (
+            <p className="text-sm text-gray-500 mb-3">No comments yet.</p>
+          )}
+
           {comments.map((c) => (
-            <div key={c.id} className="mb-2 p-2 rounded bg-gray-100">
+            <div
+              key={c.id}
+              className="mb-2 p-2 rounded bg-gray-100 border border-gray-200"
+            >
               <div className="font-semibold text-sm">{c.handle}</div>
               <div className="text-sm">{c.text}</div>
             </div>
           ))}
 
-          {/* Comment form */}
+          {/* comment form */}
           {user && (
-            <form onSubmit={handleSubmit} className="flex gap-2 mt-2">
+            <form onSubmit={handleSubmit} className="flex gap-2 mt-3">
               <input
                 className="feed-input flex-1"
                 placeholder="Write a comment…"
                 value={newComment}
                 onChange={(e) => setNewComment(e.target.value)}
               />
-              <button className="feed-submit px-3" type="submit">
+              <button type="submit" className="feed-submit px-4">
                 Post
               </button>
             </form>
@@ -166,9 +180,8 @@ function CommentsSection({ battleId }: { battleId: string }) {
 }
 
 /* ----------------------------------------------------
-   YouTube Embed Helper
+   YOUTUBE EMBED
 ---------------------------------------------------- */
-
 function getYouTubeEmbedId(url: string): string | null {
   try {
     const u = new URL(url);
@@ -177,16 +190,15 @@ function getYouTubeEmbedId(url: string): string | null {
       const v = u.searchParams.get("v");
       if (v) return v;
       if (u.pathname.startsWith("/shorts/"))
-        return u.pathname.split("/shorts/")[1]?.split("?")[0] ?? null;
+        return u.pathname.split("/shorts/")[1]?.split("?")[0] || null;
     }
   } catch {}
   return null;
 }
 
 /* ----------------------------------------------------
-   Main Component
+   MAIN BATTLES PAGE
 ---------------------------------------------------- */
-
 export default function BattlesPage() {
   const { user, activeProfile } = useAuthContext();
 
@@ -214,12 +226,7 @@ export default function BattlesPage() {
   useEffect(() => {
     const q = query(collection(db, "battles"), orderBy("createdAt", "desc"));
     return onSnapshot(q, (snap) => {
-      setBattles(
-        snap.docs.map((d) => ({
-          id: d.id,
-          ...d.data(),
-        }))
-      );
+      setBattles(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
     });
   }, []);
 
@@ -251,7 +258,7 @@ export default function BattlesPage() {
       clipBUrl: "",
     });
 
-    setShowForm(false);
+    setShowingForm: false;
     setCreating(false);
   };
 
@@ -259,16 +266,15 @@ export default function BattlesPage() {
     if (!user) return;
 
     const v = voteState[battleId] ?? { a: false, b: false };
-    if (side === "A" && v.a) return;
-    if (side === "B" && v.b) return;
+    if ((side === "A" && v.a) || (side === "B" && v.b)) return;
 
     const ref = doc(db, "battles", battleId);
     await updateDoc(ref, {
       [side === "A" ? "votesA" : "votesB"]: increment(1),
     });
 
-    setVoteState((p: any) => ({
-      ...p,
+    setVoteState((prev: any) => ({
+      ...prev,
       [battleId]: { ...v, [side.toLowerCase()]: true },
     }));
   };
@@ -279,6 +285,7 @@ export default function BattlesPage() {
         <h1>Battles</h1>
       </div>
 
+      {/* create-toggle */}
       <div className="flex justify-center mb-3">
         <button
           onClick={() => setShowForm((p) => !p)}
@@ -288,6 +295,7 @@ export default function BattlesPage() {
         </button>
       </div>
 
+      {/* create form */}
       {showForm && (
         <section className="feed-form">
           <form onSubmit={handleCreate} className="space-y-3">
@@ -320,14 +328,18 @@ export default function BattlesPage() {
               className="feed-input"
               placeholder="Your clip (YouTube URL)"
               value={form.clipAUrl}
-              onChange={(e) => setForm({ ...form, clipAUrl: e.target.value })}
+              onChange={(e) =>
+                setForm({ ...form, clipAUrl: e.target.value })
+              }
             />
 
             <input
               className="feed-input"
               placeholder="Opponent clip (YouTube URL)"
               value={form.clipBUrl}
-              onChange={(e) => setForm({ ...form, clipBUrl: e.target.value })}
+              onChange={(e) =>
+                setForm({ ...form, clipBUrl: e.target.value })
+              }
             />
 
             <button className="feed-submit" disabled={creating}>
@@ -337,6 +349,7 @@ export default function BattlesPage() {
         </section>
       )}
 
+      {/* battles list */}
       <section className="clips-list">
         {battles.map((battle) => {
           const voted = voteState[battle.id] ?? { a: false, b: false };
@@ -346,7 +359,6 @@ export default function BattlesPage() {
           return (
             <article key={battle.id} className="clip-card">
               <div className="clip-title">{battle.title}</div>
-
               <p>{battle.conditions}</p>
 
               <div className="battle-videos">
@@ -387,7 +399,7 @@ export default function BattlesPage() {
 
               <LikeButton battleId={battle.id} likes={battle.likes} />
 
-              {/* COMMENTS SECTION */}
+              {/* NEW pill-style comments */}
               <CommentsSection battleId={battle.id} />
             </article>
           );
@@ -396,5 +408,3 @@ export default function BattlesPage() {
     </div>
   );
 }
-
-
